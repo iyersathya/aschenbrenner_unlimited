@@ -1,0 +1,14 @@
+[Unit]
+Description=aschenbrenner-unlimited lifecycle scheduler (paper trading, stocks + LEAPS)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/myrandy/projects/aschenbrenner_unlimited
+ExecStart=/home/myrandy/projects/target/release/aschenbrenner-unlimited scheduler
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,23 @@
+{
+  "confidence": 0.85,
+  "decision": "Buy",
+  "direction": "bullish",
+  "error": null,
+  "generated_at": "2026-06-08T10:00:00Z",
+  "reports": {
+    "bear_case": "Extended above the 20DMA; pullback risk.",
+    "bull_case": "Trend + flow align for continuation.",
+    "final_decision": "Buy",
+    "fundamentals_report": "Revenue growth intact; guidance unchanged.",
+    "market_report": "EMA stack bullish; price reclaimed the 50DMA.",
+    "news_report": "No adverse catalysts in the lookback window.",
+    "research_decision": "Bull case carries on weight of evidence.",
+    "sentiment_report": "Net-positive social and options flow.",
+    "trader_plan": "Enter on strength; trail under the 20DMA."
+  },
+  "schema_version": 1,
+  "source": "tradingagents",
+  "status": "ok",
+  "ticker": "AAPL",
+  "trade_date": "2026-06-08"
+}

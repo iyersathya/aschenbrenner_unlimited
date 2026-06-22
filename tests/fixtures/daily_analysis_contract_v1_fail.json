@@ -1,0 +1,13 @@
+{
+  "confidence": 0.0,
+  "decision": "Buy",
+  "direction": "neutral",
+  "error": "ollama timeout after 3 retries",
+  "generated_at": "2026-06-08T10:00:00Z",
+  "reports": {},
+  "schema_version": 1,
+  "source": "tradingagents",
+  "status": "fail",
+  "ticker": "AAPL",
+  "trade_date": "2026-06-08"
+}
