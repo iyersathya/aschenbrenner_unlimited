@@ -118,17 +118,21 @@ pub fn plan_build(state: &PortfolioState, cfg: &AppConfig, asof: NaiveDate, star
         } else {
             deployable
         };
-        let total_short: f64 = names.iter().map(|(_, s)| s).sum();
         let mut spent = 0.0;
         for (t, short) in &names {
             if deployable <= 0.0 || spent >= stage_budget {
                 break;
             }
-            let want = if stage == Stage::Asymmetric {
-                (stage_budget * (short / total_short)).min(*short)
-            } else {
-                *short
-            };
+            // Sequential fill, biggest shortfall first: each name may take up
+            // to the whole remaining daily budget. The old pro-rata slices
+            // (budget/N) sat below one share's price for the expensive names
+            // (STRL $777, MTZ $391, VRT $312 …), so `execute` skipped them
+            // every day while the cheap names filled — the book was building
+            // itself in share-price order (2026-07-01 analysis, same flaw as
+            // the sibling aschenbrenner_portfolio; fixed in lockstep).
+            // Names still rotate across days: once funded, a name's shortfall
+            // drops below the next name's and the budget moves on.
+            let want = *short;
             let take = want.min(deployable).min(stage_budget - spent);
             if take > 1.0 {
                 actions.push(Action::buy(t.ticker, take, format!("build {} — day {} of phased accumulation", t.tier.label(), elapsed)));
@@ -173,6 +177,31 @@ mod tests {
         let asof2 = NaiveDate::from_ymd_opt(2026, 6, 22).unwrap();
         let acts2 = plan_build(&st, &AppConfig::default(), asof2, start);
         assert!(acts2.iter().any(|a| targets::is_leaps(targets::find(&a.ticker).unwrap())));
+    }
+
+    #[test]
+    fn asymmetric_fill_is_sequential_not_pro_rata() {
+        // DCA-starvation regression (2026-07-01, fixed in lockstep with the
+        // sibling aschenbrenner_portfolio): pro-rata slices of budget/N sat
+        // below one share of the expensive names (STRL $777, MTZ $391), so
+        // they were skipped every day. The biggest-shortfall name must get a
+        // slice bounded only by the daily budget.
+        let st = empty_state(40_000.0);
+        let start = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
+        let asof = NaiveDate::from_ymd_opt(2026, 6, 10).unwrap(); // Asym active
+        let cfg = AppConfig::default();
+        let acts = plan_build(&st, &cfg, asof, start);
+        let asym: Vec<_> = acts
+            .iter()
+            .filter(|a| targets::find(&a.ticker).map(|t| t.tier == Tier::Asymmetric).unwrap_or(false))
+            .collect();
+        assert!(!asym.is_empty());
+        assert!(
+            asym[0].dollars >= cfg.build_daily_budget * 0.9,
+            "first asym slice {} should be ~the full budget {}",
+            asym[0].dollars,
+            cfg.build_daily_budget
+        );
     }
 
     #[test]

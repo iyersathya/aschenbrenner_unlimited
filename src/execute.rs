@@ -143,7 +143,16 @@ pub async fn execute_actions(
         if a.kind == ActionKind::Buy {
             dollars = dollars.min(buy_budget);
             if dollars < r.unit_price {
-                results.push(skip(a, "no-leverage cap: insufficient cash for 1 unit"));
+                // Distinguish a genuinely cash-capped buy from a planned slice
+                // that is simply smaller than one unit — the old label blamed
+                // the no-leverage cap with five figures of cash in the account
+                // (2026-07-01 diagnosis; fixed in lockstep with the sibling).
+                let why = if a.dollars < r.unit_price {
+                    format!("slice ${:.0} < 1 unit (${:.2}) — deferred to a later tranche", a.dollars, r.unit_price)
+                } else {
+                    format!("no-leverage cap: cash budget ${:.0} < 1 unit (${:.2})", buy_budget, r.unit_price)
+                };
+                results.push(skip(a, &why));
                 continue;
             }
         }
