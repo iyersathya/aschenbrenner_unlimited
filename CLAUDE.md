@@ -37,6 +37,7 @@ cargo test  -p aschenbrenner-unlimited portfolio::targets::tests::leaps_resolve_
 ./target/debug/aschenbrenner-unlimited signals         # daily-analysis overlay for all names
 ./target/debug/aschenbrenner-unlimited signals GEV CEG # specific tickers
 ./target/debug/aschenbrenner-unlimited review          # quarterly checkpoint digest (advisory)
+./target/debug/aschenbrenner-unlimited reconcile no-send  # broker↔targets audit, read-only, no Telegram
 ./target/debug/aschenbrenner-unlimited cancel          # cancel all open orders
 ./target/debug/aschenbrenner-unlimited notify "text"   # send Telegram test message
 ./target/debug/aschenbrenner-unlimited scheduler dry-run  # blocking daily loop, no orders
@@ -74,6 +75,13 @@ main.rs → run.rs          CLI dispatch, verb routing
   ├── execute.rs          execute_actions(): Action → marketable-LIMIT order (stocks + LEAPS)
   ├── lifecycle/daily.rs  Daily cycle: safety → snapshot → high-water → plan → execute → persist
   ├── lifecycle/review.rs Quarterly review digest (advisory)
+  ├── lifecycle/audit.rs  Broker↔targets reconcile audit (`reconcile [no-send]`; also runs
+  │                       after each scheduler daily window). Read-only vs broker; only write
+  │                       is meta/reconcile-<date>.json. Quantities are broker-as-book here
+  │                       (no ledger), so it audits universe membership + invariants: ALARM on
+  │                       short stock, any non-long-call option (put/short leg), or a symbol
+  │                       outside the resolved TARGETS universe (incl. OCC-identity mismatch
+  │                       on LEAPS); unheld/unresolved targets are notes. Telegram on alarm.
   └── scheduler.rs        Blocking daily loop: 10:00 PT window + quarterly on first weekday of quarter
 ```
 

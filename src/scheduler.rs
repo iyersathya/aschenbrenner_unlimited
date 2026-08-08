@@ -9,13 +9,23 @@
 //! drives both the initial accumulation and the steady-state rebalancing.
 
 use crate::core::config::get_config;
-use crate::lifecycle::{daily, daily::RunMode, review};
+use crate::core::vault::VaultClient;
+use crate::lifecycle::{audit, daily, daily::RunMode, review};
 use chrono::{Datelike, Timelike, Weekday};
 use chrono_tz::Tz;
 use std::collections::HashSet;
 use std::time::Duration;
 
 const DAILY_HOUR: u32 = 10; // 10:00 in the configured tz
+
+/// Post-cycle broker↔targets reconcile audit. Read-only against the broker;
+/// writes only the `meta/reconcile-<date>.json` note. Telegrams on alarm even
+/// in dry-run (same idiom as the daily digest — alerts are not orders).
+async fn run_reconcile_audit() {
+    let cfg = get_config();
+    let vault = VaultClient::new(Some(cfg.vault_path.clone()));
+    let _ = audit::run_audit(cfg, &vault, true).await;
+}
 
 fn is_weekday(wd: Weekday) -> bool {
     !matches!(wd, Weekday::Sat | Weekday::Sun)
@@ -41,6 +51,7 @@ pub async fn run_scheduler(armed: bool) {
         if fired.insert(key) {
             tracing::info!("catch-up: running missed daily window");
             println!("{}", daily::run(RunMode::Build, armed).await);
+            run_reconcile_audit().await;
         }
     }
 
@@ -63,6 +74,9 @@ pub async fn run_scheduler(armed: bool) {
             if fired.insert(key) {
                 tracing::info!("daily window");
                 println!("{}", daily::run(RunMode::Build, armed).await);
+                // Post-cycle reconcile: catches anything the cycle's orders (or
+                // a foreign/manual order) left inconsistent with TARGETS.
+                run_reconcile_audit().await;
             }
         }
 

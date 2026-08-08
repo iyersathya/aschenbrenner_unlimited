@@ -41,6 +41,7 @@ pub async fn main() -> i32 {
         "review" => {
             println!("{}", review::run().await);
         }
+        "reconcile" => cmd_reconcile(rest).await,
         "signals" => cmd_signals(rest).await,
         "cancel" => cmd_cancel().await,
         "notify" => {
@@ -173,6 +174,43 @@ async fn cmd_signals(rest: &[String]) {
     }
 }
 
+async fn cmd_reconcile(rest: &[String]) {
+    let cfg = get_config();
+    let vault = VaultClient::new(Some(cfg.vault_path.clone()));
+    let send = !rest.iter().any(|a| a.eq_ignore_ascii_case("no-send"));
+    println!("aschenbrenner-unlimited — broker↔targets reconcile audit");
+    match crate::lifecycle::audit::run_audit(cfg, &vault, send).await {
+        None => println!("Alpaca keys not configured or broker unreachable — audit skipped."),
+        Some(r) => {
+            println!(
+                "date {} · broker positions {} · designed targets {} · alarms {} · notes {}",
+                r.date, r.broker_positions, r.expected_targets, r.alarms, r.notes
+            );
+            for line in &r.explained {
+                println!("  explained : {line}");
+            }
+            for f in &r.findings {
+                let sev = if f.kind.is_alarm() { "ALARM" } else { "note " };
+                println!(
+                    "  {sev}     : {:?} {} qty {:+.0} mv ${:+.0} — {}",
+                    f.kind, f.symbol, f.qty, f.market_value, f.detail
+                );
+            }
+            println!(
+                "Audit note written to meta/reconcile-{}.json{}.",
+                r.date,
+                if r.alarms == 0 {
+                    " (clean — no Telegram)"
+                } else if send {
+                    "; Telegram alarm sent"
+                } else {
+                    " (no-send)"
+                }
+            );
+        }
+    }
+}
+
 async fn cmd_cancel() {
     let cfg = get_config();
     let Some(client) = AlpacaClient::from_config(cfg) else {
@@ -243,6 +281,8 @@ fn cmd_help() {
          \x20 daily|track [dry-run]   Daily tracking + maintenance rebalance. ARMED by default\n\
          \x20 rebalance [dry-run] Force a maintenance rebalance now. ARMED by default\n\
          \x20 review              Quarterly checkpoint digest (advisory; no orders)\n\
+         \x20 reconcile [no-send] Broker↔targets position audit (read-only; alarms on short/\n\
+         \x20                     non-long-call/untracked; writes meta/reconcile-<date>.json)\n\
          \x20 signals [TICKER..]  Show daily-analysis overlay for the portfolio names\n\
          \x20 cancel              Cancel all open orders\n\
          \x20 notify [text]       Send a test Telegram message\n\
