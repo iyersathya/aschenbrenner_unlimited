@@ -43,6 +43,26 @@ pub struct Quant {
     pub float_shares: Option<i64>,
     /// Market-regime gate (0 stress – 100 calm), identical across the batch.
     pub macro_score: Option<i64>,
+    /// CapEx-cycle / cash-flow sub-block (SEC XBRL; stock_analysis_playbook).
+    /// Absent for ETFs and un-analyzed names — treat as "unknown".
+    pub fundamentals: Option<Fundamentals>,
+}
+
+/// The subset of `quant.fundamentals` the long-horizon overlay uses. All TTM;
+/// trends are percentage-POINT changes vs the year-ago TTM.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Fundamentals {
+    pub revenue_yoy_pct: Option<f64>,
+    /// OCF-margin trend. Positive while `capex_cycle` ⇒ the spend is funded
+    /// by real cash generation (the playbook's strongest health signal).
+    pub ocf_margin_trend_pp: Option<f64>,
+    /// Operating-margin trend — compression here is the REAL warning
+    /// (FCF compression during a CapEx cycle is expected by construction).
+    pub op_margin_trend_pp: Option<f64>,
+    pub capex_cycle: Option<bool>,
+    /// Current P/OCF vs the ticker's OWN 5y median (%): >0 ⇒ above own
+    /// history ⇒ expensive regardless of how the multiple looks vs peers.
+    pub p_ocf_vs_median_pct: Option<f64>,
 }
 
 #[allow(dead_code)] // ticker/trade_date/source_path/quant carried for callers + digests
@@ -123,6 +143,16 @@ fn parse_quant(j: &Value) -> Option<Quant> {
         iv_rank: f("iv_rank"),
         next_earnings_date: s("next_earnings_date"),
         days_to_earnings: q.get("days_to_earnings").and_then(|v| v.as_i64()),
+        fundamentals: q.get("fundamentals").and_then(|v| v.as_object()).map(|fq| {
+            let ff = |k: &str| fq.get(k).and_then(|v| v.as_f64());
+            Fundamentals {
+                revenue_yoy_pct: ff("revenue_yoy_pct"),
+                ocf_margin_trend_pp: ff("ocf_margin_trend_pp"),
+                op_margin_trend_pp: ff("op_margin_trend_pp"),
+                capex_cycle: fq.get("capex_cycle").and_then(|v| v.as_bool()),
+                p_ocf_vs_median_pct: ff("p_ocf_vs_median_pct"),
+            }
+        }),
         analyst_target: f("analyst_target"),
         analyst_target_upside_pct: f("analyst_target_upside_pct"),
         free_float_pct: f("free_float_pct"),
@@ -271,6 +301,11 @@ mod tests {
         assert_eq!(q.price, Some(196.5));
         assert_eq!(q.macro_score, Some(61));
         assert_eq!(q.analyst_target, Some(235.0));
+        // The additive fundamentals sub-block parses from the same fixture.
+        let f = q.fundamentals.expect("fundamentals sub-block must parse");
+        assert_eq!(f.p_ocf_vs_median_pct, Some(6.64));
+        assert_eq!(f.op_margin_trend_pp, Some(0.45));
+        assert_eq!(f.capex_cycle, Some(false));
         let _ = std::fs::remove_dir_all(&root);
     }
 
