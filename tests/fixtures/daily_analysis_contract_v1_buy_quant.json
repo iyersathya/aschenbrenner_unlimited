@@ -10,6 +10,23 @@
     "as_of": "2026-06-05",
     "atr_pct_14d": 1.83,
     "avg_dollar_volume_20d": 8500000000.0,
+    "context": {
+      "ratings": {
+        "buy": 69,
+        "consensus": "Buy",
+        "hold": 32,
+        "sell": 9,
+        "sell_ratio": 0.081,
+        "strong_buy": 1,
+        "strong_sell": 0,
+        "total": 111
+      },
+      "target_band": {
+        "high": 400.0,
+        "low": 245.0,
+        "median": 355.0
+      }
+    },
     "days_to_earnings": 53,
     "expected_move_30d_pct": 8.14,
     "float_shares": 15200000000,
