@@ -148,7 +148,19 @@ pub async fn execute_actions(
                 // the no-leverage cap with five figures of cash in the account
                 // (2026-07-01 diagnosis; fixed in lockstep with the sibling).
                 let why = if a.dollars < r.unit_price {
-                    format!("slice ${:.0} < 1 unit (${:.2}) — deferred to a later tranche", a.dollars, r.unit_price)
+                    if r.unit_price <= buy_budget {
+                        // The unit itself fits in today's deployable cash — the
+                        // pro-rata slice, not affordability, is what deferred it.
+                        // Surfacing this distinguishes "waiting on cash" from the
+                        // allocator structurally never crossing a unit price
+                        // (42 straight all-skip days as of 2026-08-18).
+                        format!(
+                            "slice ${:.0} < 1 unit (${:.2}) — deferred, though the unit fits deployable ${:.0} (allocator gap, not cash)",
+                            a.dollars, r.unit_price, buy_budget
+                        )
+                    } else {
+                        format!("slice ${:.0} < 1 unit (${:.2}) — deferred to a later tranche", a.dollars, r.unit_price)
+                    }
                 } else {
                     format!("no-leverage cap: cash budget ${:.0} < 1 unit (${:.2})", buy_budget, r.unit_price)
                 };
