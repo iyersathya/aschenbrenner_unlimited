@@ -147,6 +147,19 @@ pub async fn execute_actions(
                 // that is simply smaller than one unit — the old label blamed
                 // the no-leverage cap with five figures of cash in the account
                 // (2026-07-01 diagnosis; fixed in lockstep with the sibling).
+                // Does this deferral pin the build phase? build_complete()
+                // needs |w - target| ≤ band (or w ≥ target); a shortfall wider
+                // than the band that can never round up to one unit is the
+                // structural blocker (day 47+ of "build", 2026-08-25 diagnosis).
+                let band_d = cfg.rebalance_band_pct * state.nav.max(1e-9);
+                let blocker = if a.dollars > band_d && a.dollars < r.unit_price {
+                    format!(
+                        " — BLOCKS build_complete: shortfall ${:.0} > band ${:.0} but < 1 unit",
+                        a.dollars, band_d
+                    )
+                } else {
+                    String::new()
+                };
                 let why = if a.dollars < r.unit_price {
                     if r.unit_price <= buy_budget {
                         // The unit itself fits in today's deployable cash — the
@@ -155,11 +168,11 @@ pub async fn execute_actions(
                         // allocator structurally never crossing a unit price
                         // (42 straight all-skip days as of 2026-08-18).
                         format!(
-                            "slice ${:.0} < 1 unit (${:.2}) — deferred, though the unit fits deployable ${:.0} (allocator gap, not cash)",
-                            a.dollars, r.unit_price, buy_budget
+                            "slice ${:.0} < 1 unit (${:.2}) — deferred, though the unit fits deployable ${:.0} (allocator gap, not cash){}",
+                            a.dollars, r.unit_price, buy_budget, blocker
                         )
                     } else {
-                        format!("slice ${:.0} < 1 unit (${:.2}) — deferred to a later tranche", a.dollars, r.unit_price)
+                        format!("slice ${:.0} < 1 unit (${:.2}) — deferred to a later tranche{}", a.dollars, r.unit_price, blocker)
                     }
                 } else {
                     format!("no-leverage cap: cash budget ${:.0} < 1 unit (${:.2})", buy_budget, r.unit_price)
@@ -276,6 +289,22 @@ mod tests {
         assert_eq!(res.len(), 1);
         assert_eq!(res[0].qty, 1, "expected 1 contract, got {}", res[0].qty);
         assert!(res[0].ticker.contains("NVDA280121C00300000"));
+    }
+
+    #[tokio::test]
+    async fn sub_unit_slice_wider_than_band_is_named_as_build_blocker() {
+        // Offline NVDA LEAPS = $3,000/contract. A $1,200 shortfall on a
+        // $36,000 NAV is 3.3% > the 3% band yet < one contract: the exact
+        // shape that pins the sleeve in build mode forever (2026-08-25).
+        let st = state(5_000.0, 36_000.0);
+        let acts = vec![Action::buy("NVDA_LEAPS", 1_200.0, "build")];
+        let res = execute_actions(&acts, &AppConfig::default(), None, None, false, &st).await;
+        assert!(res[0].status.contains("BLOCKS build_complete"), "{}", res[0].status);
+        // A slice inside the band is an ordinary deferral, not a blocker.
+        let acts = vec![Action::buy("NVDA_LEAPS", 500.0, "build")];
+        let res = execute_actions(&acts, &AppConfig::default(), None, None, false, &st).await;
+        assert!(res[0].status.contains("deferred"), "{}", res[0].status);
+        assert!(!res[0].status.contains("BLOCKS"), "{}", res[0].status);
     }
 
     #[tokio::test]
