@@ -14,7 +14,7 @@ It **trades both stocks and single-leg long-call options** — the only sleeve i
 the family that does options buying here (no spreads, no covered calls).
 
 Capital-isolated paper sleeve: its own Alpaca **paper** account
-(`PKL3NILMKRLVXSVV3FAWKW3AIO`, options level 3), its own gdrive vault
+(`PA3OI8CO1MYV`, options level 3), its own gdrive vault
 (`~/gdrive/vault/aschenbrenner-unlimited`), its own Telegram bot, its own config.
 
 **Sibling sleeve:** `../aschenbrenner_portfolio` runs the stocks-only
