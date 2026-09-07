@@ -1,0 +1,753 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>aschenbrenner-unlimited — Architecture Atlas</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root{
+    --bg:#0b0f17; --bg2:#10172a; --ink:#e6e9f2; --muted:#7e8aa8;
+    --accent:#7cf2c0; --accent2:#ffd166;
+    --L0:#9bb4ff;   /* infra / orchestration */
+    --L1:#54b1ff;   /* signals */
+    --L2:#b985ff;   /* matcher */
+    --L25:#ff85b3;  /* debate */
+    --L3:#7cf2c0;   /* trade ops / execution */
+    --L4:#ffd166;   /* reflection / calibration */
+    --LLM:#ff9d5c;  /* llm seams */
+    --vault:#9aa6c4;
+    --alpaca:#ff8d6b; --yahoo:#b985ff; --fred:#4cc7d2;
+    --sec:#9aa6c4; --ollama:#ff9d5c; --tg:#54b1ff;
+    --pixel:'JetBrains Mono','SF Mono',Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:12.5px/1.45 var(--pixel); overflow:hidden;
+    background-image:
+      linear-gradient(transparent 0,transparent 23px,rgba(124,242,192,.025) 24px),
+      linear-gradient(90deg,transparent 0,transparent 23px,rgba(124,242,192,.025) 24px);
+    background-size:24px 24px;
+  }
+  header{
+    position:fixed; inset:0 0 auto 0; height:56px; z-index:50;
+    display:flex; align-items:center; gap:14px; padding:0 16px;
+    background:linear-gradient(180deg,#0d1426,#0b0f17 90%);
+    border-bottom:1px solid #1c2742;
+  }
+  header h1{
+    margin:0; font-size:14px; letter-spacing:.6px; color:var(--accent);
+    text-shadow:0 0 8px rgba(124,242,192,.18);
+  }
+  header h1 .sub{color:var(--muted); font-weight:400; margin-left:8px}
+  .tabs{display:flex; gap:4px; margin-left:6px}
+  .tab{
+    background:#121b33; color:var(--muted); border:1px solid #1f2a45;
+    padding:5px 10px; border-radius:4px; font:11px var(--pixel); cursor:pointer;
+    letter-spacing:.4px;
+  }
+  .tab:hover{color:var(--ink); border-color:#2c3b65}
+  .tab.active{background:#1b2a4d; color:var(--accent); border-color:var(--accent)}
+  .grow{flex:1}
+  .search{
+    background:#0e1730; border:1px solid #1f2a45; color:var(--ink);
+    padding:5px 10px; width:210px; border-radius:4px; font:11px var(--pixel);
+  }
+  .search:focus{outline:none; border-color:var(--accent)}
+  .play{
+    background:#1b2a4d; color:var(--accent); border:1px solid var(--accent);
+    padding:5px 12px; border-radius:4px; font:11px var(--pixel);
+    cursor:pointer; letter-spacing:.5px;
+  }
+  .play:hover{background:#243b6c}
+  .play.playing{background:var(--accent); color:#062018}
+
+  main{position:absolute; top:56px; left:0; right:360px; bottom:0; overflow:hidden}
+  svg.canvas{width:100%; height:100%; display:block; cursor:grab}
+  svg.canvas:active{cursor:grabbing}
+
+  aside{
+    position:fixed; top:56px; right:0; bottom:0; width:360px;
+    background:#0d1426; border-left:1px solid #1c2742;
+    overflow-y:auto; padding:14px 16px 80px;
+  }
+  aside h2{margin:0 0 4px; font-size:13px; color:var(--accent2); letter-spacing:.5px}
+  aside h2 .badge{
+    display:inline-block; vertical-align:middle; font-size:10px; padding:2px 6px;
+    margin-left:6px; border-radius:3px; background:#1c2742; color:var(--muted);
+  }
+  aside .desc{color:var(--muted); margin:6px 0 14px; font-size:11.5px; line-height:1.6}
+  aside h3{
+    font-size:11px; color:var(--ink); letter-spacing:.6px; text-transform:uppercase;
+    margin:14px 0 6px; padding-bottom:2px; border-bottom:1px solid #1c2742;
+  }
+  aside .kv{display:grid; grid-template-columns:74px 1fr; gap:4px 8px; font-size:11px}
+  aside .kv .k{color:var(--muted)}
+  aside code{background:#0e1730; border:1px solid #1f2a45; border-radius:3px; padding:1px 5px; font-size:10.5px}
+  aside ul{margin:6px 0; padding-left:14px; font-size:11px}
+  aside ul li{margin:3px 0; color:#cdd5ea}
+  aside .pill{display:inline-block; font-size:10px; padding:2px 6px; border-radius:3px; margin:2px 4px 2px 0}
+  aside .pill.alpaca{background:rgba(255,141,107,.15); color:var(--alpaca)}
+  aside .pill.yahoo{background:rgba(185,133,255,.15); color:var(--yahoo)}
+  aside .pill.fred{background:rgba(76,199,210,.15); color:var(--fred)}
+  aside .pill.sec{background:rgba(154,166,196,.15); color:var(--sec)}
+  aside .pill.ollama{background:rgba(255,157,92,.15); color:var(--ollama)}
+  aside .pill.telegram{background:rgba(84,177,255,.15); color:var(--tg)}
+  aside .empty{color:var(--muted); padding:80px 0; text-align:center; font-size:12px}
+  aside .empty .hint{margin-top:10px; font-size:11px; color:#5a657f; line-height:1.7}
+
+  .legend{
+    position:fixed; left:14px; bottom:14px; z-index:30;
+    background:rgba(13,20,38,.92); border:1px solid #1c2742; border-radius:6px;
+    padding:10px 12px; font-size:10.5px; backdrop-filter:blur(4px); max-width:300px;
+  }
+  .legend .row{display:flex; align-items:center; gap:8px; margin:3px 0}
+  .legend .sw{width:14px; height:14px; border-radius:3px}
+  .legend .label{color:var(--muted)}
+
+  .anim-status{
+    position:fixed; left:50%; top:72px; transform:translateX(-50%);
+    background:rgba(28,39,66,.95); padding:6px 14px; border-radius:5px;
+    color:var(--accent); font-size:11px; letter-spacing:.4px;
+    border:1px solid var(--accent); opacity:0; pointer-events:none;
+    transition:opacity .25s; z-index:40; max-width:70vw; text-align:center;
+  }
+  .anim-status.show{opacity:1}
+
+  .node{cursor:pointer; transition:filter .2s}
+  .node rect,.node polygon{transition:filter .2s}
+  .node:hover rect,.node:hover polygon{filter:brightness(1.25)}
+  .node.dim{opacity:.16}
+  .node.highlight rect,.node.highlight polygon{filter:drop-shadow(0 0 6px currentColor) brightness(1.3)}
+  .node text{fill:var(--ink); font:bold 10.5px var(--pixel); pointer-events:none}
+  .node .sub{fill:var(--muted); font:9px var(--pixel); font-weight:400}
+  .node.layer-L0 rect{fill:#141d3a; stroke:var(--L0); stroke-width:1.5}
+  .node.layer-L1 rect{fill:#102745; stroke:var(--L1); stroke-width:1.5}
+  .node.layer-L2 rect{fill:#1c1640; stroke:var(--L2); stroke-width:1.5}
+  .node.layer-L25 rect{fill:#33162a; stroke:var(--L25); stroke-width:1.5}
+  .node.layer-L3 rect{fill:#0e2b22; stroke:var(--L3); stroke-width:1.5}
+  .node.layer-L4 rect{fill:#332615; stroke:var(--L4); stroke-width:1.5}
+  .node.layer-LLM rect{fill:#2e1c10; stroke:var(--LLM); stroke-width:1.5}
+  .node.kind-data rect{fill:#10172a; stroke:#5a657f; stroke-width:1.2; stroke-dasharray:2 2}
+  .node.kind-vault polygon{fill:#171c2c; stroke:var(--vault); stroke-width:1.5; stroke-dasharray:4 2}
+  .node.kind-ext rect{fill:#1a131e; stroke:#857094; stroke-width:1.2}
+  .node.kind-ext.svc-alpaca rect{stroke:var(--alpaca)}
+  .node.kind-ext.svc-yahoo rect{stroke:var(--yahoo)}
+  .node.kind-ext.svc-fred rect{stroke:var(--fred)}
+  .node.kind-ext.svc-sec rect{stroke:var(--sec)}
+  .node.kind-ext.svc-ollama rect{stroke:var(--ollama)}
+  .node.kind-ext.svc-telegram rect{stroke:var(--tg)}
+  .node.kind-guard polygon{fill:#2a1622; stroke:#ff6b9b; stroke-width:1.5}
+  .node.kind-guard text{fill:#ffd0e0}
+
+  .edge{
+    stroke:#2a3759; stroke-width:1.4; fill:none; marker-end:url(#arrow);
+    transition:stroke .2s,stroke-width .2s,opacity .2s;
+  }
+  .edge.dim{opacity:.07}
+  .edge.highlight{stroke:var(--accent); stroke-width:2.2; marker-end:url(#arrow-hi)}
+  .edge.flow-active{
+    stroke:var(--accent2); stroke-width:2.4; stroke-dasharray:8 4;
+    marker-end:url(#arrow-flow); animation:flow 1s linear infinite;
+  }
+  @keyframes flow{to{stroke-dashoffset:-24}}
+  .zone-label{fill:var(--muted); font:bold 11px var(--pixel); letter-spacing:1.4px; text-transform:uppercase}
+  .zone-bg{fill:rgba(255,255,255,.012); stroke:#1c2742; stroke-dasharray:3 3}
+  @media (max-width:980px){ aside{display:none} main{right:0} }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>ASCHENBRENNER-UNLIMITED <span class="sub">// architecture atlas — Floor 2x / Ceiling UNLIMITED · stocks + long-call LEAPS · ARMED default · updated 2026-09-07</span></h1>
+  <div class="tabs" id="tabs">
+    <button class="tab active" data-view="pipeline">⌗ Daily cadence</button>
+    <button class="tab" data-view="timeline">◷ Scheduler timeline</button>
+    <button class="tab" data-view="lifecycle">↻ Tier model · LEAPS + rebalance</button>
+    <button class="tab" data-view="vault">▣ Vault graph</button>
+    <button class="tab" data-view="llm">✦ Signal overlay</button>
+  </div>
+  <div class="grow"></div>
+  <input id="search" class="search" placeholder="filter (leaps, tier d, cluster...)" />
+  <button id="play" class="play">▶ Play daily flow</button>
+</header>
+
+<div id="anim-status" class="anim-status">Idle</div>
+
+<main>
+  <svg id="canvas" class="canvas" viewBox="0 0 1600 1000" preserveAspectRatio="xMidYMid meet">
+    <defs>
+      <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+        <path d="M0,0 L0,6 L9,3 z" fill="#2a3759"/></marker>
+      <marker id="arrow-hi" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+        <path d="M0,0 L0,6 L9,3 z" fill="#7cf2c0"/></marker>
+      <marker id="arrow-flow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+        <path d="M0,0 L0,6 L9,3 z" fill="#ffd166"/></marker>
+    </defs>
+    <g id="zones"></g>
+    <g id="edges"></g>
+    <g id="nodes"></g>
+  </svg>
+</main>
+
+<aside id="panel">
+  <div class="empty">
+    <div>← click any node</div>
+    <div class="hint">hover highlights upstream + downstream<br>type in the search box to filter<br>▶ animates a cycle through the stack<br>scroll = zoom · drag = pan · dbl-click = reset</div>
+  </div>
+</aside>
+
+<div class="legend" id="legend"></div>
+
+<script>
+// ─────────────────────────────────────────────────────────────────────────
+// DATA MODEL — every node + every edge, sourced from CLAUDE.md + src/ (Rust)
+// ─────────────────────────────────────────────────────────────────────────
+const NODES = {
+ // ── L0 — orchestration / infra ─────────────────────────────────────────
+ run:{l:'L0',name:'run.rs CLI',spec:'src/run.rs',
+   desc:'main() parses argv → one async command per verb: build · daily/track/rebalance · scheduler · review · reconcile · signals · positions · status · config · cancel · notify · test · help. Trading verbs (build, daily/track/rebalance, scheduler) are ARMED by default — a `dry-run`/`dryrun` token flips them to compute-and-log only (execute/armed tokens are harmless no-ops).',
+   out:'dispatches one command'},
+ sched:{l:'L0',name:'scheduler.rs',spec:'src/scheduler.rs',cron:'blocking loop',
+   desc:'Blocking daily loop on the configured tz. Deliberately sparse for a long-horizon hold: ONE tracking+rebalance window per weekday at 10:00 PT (≈13:00 ET, calm fills), plus a quarterly review on the first weekday of Jan/Apr/Jul/Oct. The daily window always calls the BUILD cycle, which self-promotes to maintenance once the book is within band. 60-second poll; in-memory fired-set dedupe (cleared past 400). Supervised by the systemd user unit.',
+   out:'fires daily 10:00 + quarterly'},
+ catch:{l:'L0',kind:'guard',name:'startup catch-up',
+   desc:'On boot: if it is a weekday and now ≥ 10:00 PT and today has not run yet (catchup_on_start), fire ONE daily BUILD cycle immediately + its reconcile audit, then resume the loop.'},
+ cfg:{l:'L0',name:'config.rs — AppConfig',spec:'src/core/config.rs',
+   desc:'Defaults → .env → env-var overrides; cached singleton via get_config(). Drives the paper base_url, VAULT_PATH, DAILY_ANALYSIS_PATH, the MICROCAP_1/MICROCAP_2 slot pins (IONQ/ASTS), SIGNAL_BIAS_ENABLED, BUILD_DAILY_BUDGET ($2000 Tier-B DCA/day), REBALANCE_BAND_PCT (3% low-churn), MAX_ORDERS_PER_DAY (10), the tier rule knobs (cluster cap 30%, trim triggers, stop %, drawdown-deploy %), Telegram creds, and KILL_FILE.',
+   out:'AppConfig consumed everywhere'},
+ daily:{l:'L0',name:'daily.rs cycle',spec:'src/lifecycle/daily.rs',
+   desc:'The once-a-day scaffold shared by both RunModes. Chain: safety_check → snapshot PortfolioState → ratchet high-water → record NAV → load SignalBias → plan (Build phased OR Maintenance rules) → execute_actions → persist cards → build digest (+ best-effort Telegram). Build mode falls through to maintenance once build_complete() so a stray build invocation cannot keep over-buying.',
+   out:'digest + vault cards, Telegram'},
+
+ // ── L1 — inputs / daily-analysis overlay ───────────────────────────────
+ safety:{l:'L0',kind:'guard',name:'safety_check',spec:'src/core/safety.rs',
+   desc:'Cycle-entry gate, checked before ANY order path. Two hard gates: the filesystem kill switch (KILL_FILE present → Halted) and the PA-paper-account guard (verify_paper_account — account must start PA; account is PA3OI8CO1MYV, options level 3). Never panics; a network blip → skip, not a false clean/dirty read.'},
+ killfile:{kind:'data',name:'KILL_FILE',spec:'aschenbrenner-unlimited.HALT',
+   desc:'Operator kill switch. Touch the file to halt all cycles at the safety gate; remove to resume. Default path is <project>/aschenbrenner-unlimited.HALT.'},
+ leverage:{l:'L0',kind:'guard',name:'no-leverage cap',spec:'safety::cash_available_for_buys',
+   desc:'PDF §6 rule 5. Total BUY notional in a cycle (stocks + LEAPS contracts × mid × 100) may never exceed settled cash minus the protected buffer (nav × cash_buffer_pct). The deterministic floor — execute.rs calls it before submitting any buy; margin is never used (it would amplify the −25% bear case into a wipe-out).'},
+ state:{l:'L1',name:'PortfolioState',spec:'src/portfolio/state.rs',
+   desc:'Assembled fresh every cycle from the Alpaca account + positions (broker-as-book — there is NO position ledger; the broker IS the source of truth for quantities). Exposes NAV, cash, per-holding market value / price / unrealized P&L%. Feeds every rule, the metrics, the digest and the audit.',touch:['alpaca']},
+ hiwater:{l:'L1',name:'high-water ratchet',spec:'daily::update_high_water',
+   desc:'Per-name high-water marks ratcheted up to the latest observed prices and saved to the vault. Drawdown-from-high feeds Rule 4 (deploy cash on visible drawdown) and the digest.',
+   out:'vault high-water marks'},
+ metrics:{l:'L1',name:'portfolio/metrics.rs',spec:'src/portfolio/metrics.rs',
+   desc:'position_metrics() (per-name drift vs target + drawdown), cluster_weights() (current vs the 30% cap), glide_path_status() (NAV vs the 26%-CAGR pace from a $40K start). Pure read over PortfolioState — powers the digest and the quarterly review.'},
+ dailyA:{l:'L1',name:'daily_analysis reader',spec:'src/signals/daily_analysis.rs',
+   desc:'Reads <daily_analysis>/<date>/<TICKER>.json — the nightly multi-agent verdict published by trading-agents-scheduler (versioned contract, 5-day lookback to the most recent prior date). Folds direction/confidence into a signed conviction [-1,1]; is_strong_bearish/bullish at ≥0.8. Also parses the additive quant block incl. the CapEx-cycle Fundamentals sub-block and the run-wide macro_score. Graceful-neutral when missing or status≠ok. This sleeve reads quant.fundamentals (not the field_quality-graded material fields), so the 2026-09 producer field_quality contract read is correctly N/A here.',touch:['sec']},
+ bias:{l:'L1',name:'signal_bias.rs — SignalBias',spec:'src/rebalance/signal_bias.rs',
+   desc:'The overlay. Loads daily_analysis for every invested name into per-ticker conviction + fundamentals tilt + the macro_score. It decides only the ORDER among already-permitted candidates (trim_priority / buy_priority) and tempers cash-deploy aggressiveness in a stressed macro regime (deploy_multiplier). It can NEVER authorize a trade a rule did not already permit — thesis-driven hold, not a signal chaser. SIGNAL_BIAS_ENABLED=false makes rebalancing fully deterministic.',touch:['sec']},
+ fund:{l:'L1',name:'fundamentals_tilt',spec:'signal_bias::fundamentals_tilt',
+   desc:'Reduces the stock_analysis_playbook read to one signed tilt [-1,1]: valuation vs the ticker’s OWN 5y P/OCF median dominates (cheap = positive, ±50% saturates), operating-margin compression is the real warning (±5pp saturates), a CapEx cycle FUNDED by expanding OCF margin earns a bonus (unfunded a penalty). Weighted at 0.25 inside the ordering keys — secondary to LLM conviction; 0 when the record carries no fundamentals (ETFs, thin filers).'},
+ macro:{l:'L1',name:'macro_score',spec:'daily_analysis::macro_score',
+   desc:'Run-wide market-regime score (0 stress – 100 calm) read from the batch’s macro block (macro.json, identical across the batch). Drives SignalBias.deploy_multiplier — calm (≥70) full deploy, stress (<30) half — so cash stays optionality in a drawdown.'},
+
+ // ── L2 — target model / rebalance planning ─────────────────────────────
+ targets:{l:'L2',name:'targets.rs — TARGETS',spec:'src/portfolio/targets.rs',
+   desc:'Authoritative 24-position model (23 rows: 22 invested + cash) across 4 tiers — A Floor 50% · B Asymmetric 32.5% · D Moonshot 12.5% · C Cash 5%. Tier enum + Instrument enum (Stock · Leaps{underlying,expiry_year,strike} · MicroCap{slot}). invested_target_weight() rescales raw % to sum to 1−cash_buffer. Tier D is EXEMPT from the cluster + position caps. portfolio.md is the human mirror — the two must stay in lockstep and a change re-runs the tests.',
+   out:'the intended-holdings universe'},
+ occ:{l:'L2',name:'OCC resolver',spec:'core/alpaca_data.rs · targets::instrument_symbol',
+   desc:'Resolves a LEAPS target to a concrete OCC symbol: build_occ(underlying, third_friday(expiry_year, 1) = Jan 3rd-Friday, is_call=true, strike). parse_occ inverts it (underlying/expiry/type/strike) for DTE time-stops and the audit’s identity match. Stocks resolve to the plain ticker; micro-caps to the config pin (None if the slot is unset).',
+   out:'e.g. NVDA280121C00300000'},
+ rules:{l:'L2',name:'rebalance/rules.rs',spec:'src/rebalance/rules.rs',
+   desc:'plan_rebalance() — the deterministic maintenance engine (PDF §9), pure over its inputs (no IO). Fixed rule order: (1) tier-aware stop + profit-take, (3) single-position cap 15%→10%, (2) cluster cap 30%, emit band-gated trims, (4) deploy cash on visible drawdown, (5) Tier-D moonshot lifecycle. The signal only re-orders candidates — it is the floor.',
+   out:'Vec<Action> (buy/trim/revalidate)'},
+ build:{l:'L2',name:'rebalance/build.rs',spec:'src/rebalance/build.rs',
+   desc:'plan_build() — the 4-stage phased initial accumulation (PDF §11), pure over its inputs. Week 1 Tier-A Floor → Week 2 Tier-B Asymmetric (DCA, BUILD_DAILY_BUDGET/day) → Week 3 Tier-D LEAPS → Weeks 4-6 micro-caps, always holding the cash buffer back. Idempotent per day: tops the active stages toward target against live NAV. build_complete() (all invested targets within band; unset micro-cap slots count satisfied) promotes the cycle to maintenance.',
+   out:'Vec<Action::buy> (dollar-keyed)'},
+
+ // ── tier lifecycle decisions (Rule 1 / 2 / 3 / 4 / 5) ──────────────────
+ tierA:{l:'L2',kind:'guard',name:'Tier A — Floor',
+   desc:'50% large-cap floor (GEV/CEG/ETN/VST/KLAC/NOC). −25% flags a thesis re-validate (−35% is the cut zone — exit only if a pillar is broken); 3x (+200%) profit-take trims 25% and rides. Protects the 2x floor (≥$80K by month 36).'},
+ tierB:{l:'L2',kind:'guard',name:'Tier B — Asymmetric',
+   desc:'32.5% mid/small-cap multi-baggers (IREN/APLD/CRWV/PLTR/STRL/MTZ/BWXT/VRT/AVAV/OKLO). NO stop by design — asymmetric names are allowed to draw down; 5x (+400%) profit-take trims 30% and rides.'},
+ tierD:{l:'L2',kind:'guard',name:'Tier D — Moonshot lifecycle',
+   desc:'12.5% moonshot sleeve — single-leg long-call LEAPS (NVDA 2028 / CRWV / IREN / OKLO 2027) + two config-pinned micro-cap slots. Exempt from the cluster + position caps, its own rule-driven (not signal-driven) lifecycle: LEAPS ≤60-DTE time-stop FLAG (advisory — if deeply OTM accept zero, else roll to a NEW thesis) + +500% sell-half; micro-cap 10x trim 50%. The book decays while the theme falls — it holds deep-underwater moonshots by design, no downside exit at any depth.'},
+ poscap:{l:'L2',kind:'guard',name:'position cap 15%→10%',
+   desc:'Rule 3 (equity sleeve only). Any Tier-A/B name over position_trim_trigger_pct (15% of NAV) is trimmed back to position_trim_target_pct (10%). Tier D is exempt.'},
+ clustercap:{l:'L2',kind:'guard',name:'cluster cap 30%',
+   desc:'Rule 2 (equity sleeve only). Any correlated cluster (Grid hardware / Nuclear baseload / Fab / Defense AGI / AI compute-hosting / DC build-out) over 30% of NAV trims its most-overweight members back, with the SignalBias trim_priority as tie-break. Tier D carries no cluster and is exempt.'},
+ deploy:{l:'L2',kind:'guard',name:'cash deploy on drawdown',
+   desc:'Rule 4. Deployable = (cash − protected buffer) × deploy_multiplier. Adds to Tier-A/B names below target when a single name is down ≥ drawdown_deploy_single_pct from its high OR its cluster is stressed (≥15% cohort drawdown). SignalBias.buy_priority funds the most-bullish first. Never breaches the no-leverage cap.'},
+
+ // ── L3 — execution & delivery ──────────────────────────────────────────
+ execute:{l:'L3',name:'execute.rs',spec:'src/execute.rs',
+   desc:'Turns each Action into a marketable-LIMIT order, branching on the resolved Instrument: stocks/micro-caps → whole-share stock orders (STOCK_BUF 0.3%); LEAPS → single-leg long-call option orders (contracts × 100, OPTION_BUF 2% — far-OTM spreads are wide). Enforces the no-leverage cap over total buy notional, re-verifies the paper guard inside every submit, and prices from the held mark or the live Alpaca mid (offline → spot_anchor guidance, advisory only). armed=false or no client → dry-run.',
+   out:'ExecResult per action',touch:['alpaca']},
+ alpacaCli:{l:'L3',name:'alpaca.rs client',spec:'src/core/alpaca.rs',
+   desc:'Alpaca trading client: get_account / get_positions, submit_stock_order, submit_option_order. verify_paper_account hard-halts on any non-PA account. Single-leg long calls only — no spreads, no covered calls, no market orders.',
+   out:'Alpaca paper orders + fills',touch:['alpaca']},
+ alpacaData:{l:'L3',name:'alpaca_data.rs',spec:'src/core/alpaca_data.rs',
+   desc:'Market data: get_stock_price, get_option_mid, plus build_occ / parse_occ / third_friday (the LEAPS expiry resolver). Prices the marketable-LIMIT and resolves LEAPS to their OCC identity.',touch:['alpaca']},
+ deliver:{l:'L3',name:'delivery.rs',spec:'src/core/delivery.rs',
+   desc:'Telegram notifier (own bot). notify_text sends the daily digest / audit alarm / quarterly review; no-op when TELEGRAM_BOT_TOKEN/CHAT_ID are unset (never errors the caller). Pinned to IPv4 (the deploy host has no working IPv6 route to api.telegram.org).',touch:['telegram']},
+ audit:{l:'L3',name:'reconcile audit',spec:'src/lifecycle/audit.rs',cron:'after each daily window',
+   desc:'Account-wide broker↔TARGETS reconcile (verb `reconcile [no-send]`; also runs after each scheduler daily window). Read-only vs the broker; the only write is meta/reconcile-<date>.json. With no ledger it audits universe membership + invariants: ALARM on any SHORT stock, any NON-long-call option (a put or short leg), or an UNTRACKED symbol outside the resolved TARGETS universe (incl. an OCC-identity mismatch on a LEAPS); unheld / unresolved targets are notes only. Telegram on an alarm-class finding.',
+   out:'vault/meta/reconcile-<date>.json',touch:['alpaca','telegram']},
+
+ // ── L4 — reflection ────────────────────────────────────────────────────
+ review:{l:'L4',name:'review.rs quarterly',spec:'src/lifecycle/review.rs',cron:'1st weekday of Q · 10:00',
+   desc:'Quarterly checkpoint (PDF §6 rule 6). Recomputes NAV vs the 26%-CAGR glide path, surfaces names on the −35% thesis-revalidate list, reports cluster health vs the cap, writes a dated markdown reflection. Advisory only — it proposes, it never trades (the PDF caps churn at <1 move/quarter).',
+   out:'vault/reflections/quarterly-*.md',touch:['alpaca','telegram']},
+ vault:{l:'L4',name:'vault.rs',spec:'src/core/vault.rs',
+   desc:'File vault (no DB). Atomic JSON writes (temp file + rename) under VAULT_PATH (~/gdrive/vault/aschenbrenner-unlimited). Holds high-water marks, NAV history, build-state (inception date), daily cards, reconcile notes, and quarterly reflections. Durability is the vault’s Drive bisync. This is the only durable state — quantities themselves are broker-as-book.',
+   out:'vault/<meta|cards|reflections>/'},
+
+ // ── vault files ────────────────────────────────────────────────────────
+ vMeta:{kind:'vault',name:'vault/meta/',
+   desc:'build-state.json (persisted inception date driving the phased-build clock), reconcile-<date>.json (the audit note), NAV history + high-water marks.'},
+ vCards:{kind:'vault',name:'vault/cards/',
+   desc:'cards-<date>.json — the planned Actions (ticker/kind/dollars/reason) + the ExecResults (side/qty/limit/dollars/status) for the day.'},
+ vNav:{kind:'vault',name:'NAV + high-water',
+   desc:'record_nav() daily NAV series (glide-path history) and the per-name high-water marks the drawdown-deploy rule reads back.'},
+ vReflect:{kind:'vault',name:'vault/reflections/',
+   desc:'quarterly-<year>-Q<n>.md — the advisory quarterly checkpoint (NAV vs glide path, revalidate list, cluster health).'},
+
+ // ── external / spec ────────────────────────────────────────────────────
+ alpacaPaper:{kind:'ext',svc:'alpaca',name:'Alpaca Paper',
+   desc:'Own paper account PA3OI8CO1MYV (options level 3). paper-api.alpaca.markets — account/positions + stock & single-leg option orders; data.alpaca.markets — stock price + option mid. Paper-only: account must start PA or the client hard-halts. ALPACA_BASE_URL must be the paper host and must not end in /v2.'},
+ dailyVault:{kind:'ext',svc:'sec',name:'daily_analysis vault',
+   desc:'~/gdrive/vault/daily_analysis — the producer→consumer contract written nightly by trading-agents-scheduler (schema v1 + additive quant incl. the CapEx-cycle fundamentals sub-block). Read-only here (the overlay). This sleeve vendors byte-identical contract fixtures under tests/fixtures/, registered in the producer’s drift gate.'},
+ telegram:{kind:'ext',svc:'telegram',name:'Telegram',
+   desc:'Own bot. Receives the daily digest, reconcile alarms, and the quarterly review. Optional — unset creds make delivery a silent no-op.'},
+ pdf:{kind:'data',name:'2x_unlimited_stocks.pdf',
+   desc:'The v4 strategy spec — Floor 2x / Ceiling UNLIMITED. Source of the tier weights, rule thresholds, phased-build cadence, and safety invariants. Sleeve-only: it has NO trader-agent mirror, so this copy (via portfolio.md + targets.rs) is authoritative.'},
+ portfolioMd:{kind:'data',name:'portfolio.md',
+   desc:'Human mirror of targets.rs — the 24-position model in prose. Kept in lockstep with the code (a target/rule change updates both and re-runs the tests).'},
+ fixtures:{kind:'data',name:'contract fixtures',spec:'tests/fixtures/',
+   desc:'Three byte-identical daily-analysis contract fixtures (v1 buy / fail / buy_quant) vendored from trading-agents-scheduler and checked by its check_contract_fixtures.sh drift gate. A schema change regenerates these AND every consumer’s copy.'},
+};
+
+// EDGES — directed from → to
+const EDGES = [
+ // boot / orchestration
+ ['run','daily'],['sched','daily'],['sched','catch'],['catch','daily'],
+ ['sched','review'],['sched','audit'],
+ ['cfg','daily'],['cfg','safety'],['cfg','targets'],
+ // safety gate
+ ['daily','safety'],['killfile','safety'],['alpacaPaper','safety'],['safety','state'],
+ // snapshot + inputs
+ ['alpacaPaper','state'],['state','hiwater'],['hiwater','vNav'],['state','metrics'],
+ ['metrics','daily'],['daily','vNav'],
+ // overlay
+ ['daily','bias'],['dailyVault','dailyA'],['fixtures','dailyA'],
+ ['dailyA','fund'],['dailyA','macro'],['dailyA','bias'],['fund','bias'],['macro','bias'],
+ ['bias','rules'],
+ // planning
+ ['targets','rules'],['targets','build'],['targets','occ'],
+ ['state','rules'],['state','build'],['vNav','rules'],['vMeta','build'],
+ ['daily','rules'],['daily','build'],
+ // rule → tier decisions
+ ['rules','tierA'],['rules','tierB'],['rules','tierD'],['rules','poscap'],
+ ['rules','clustercap'],['rules','deploy'],
+ ['bias','clustercap'],['bias','deploy'],['occ','tierD'],['build','occ'],
+ ['tierA','execute'],['tierB','execute'],['tierD','execute'],
+ ['poscap','execute'],['clustercap','execute'],['deploy','execute'],
+ // execution
+ ['rules','execute'],['build','execute'],['leverage','execute'],['occ','execute'],
+ ['execute','alpacaCli'],['execute','alpacaData'],['alpacaData','execute'],
+ ['alpacaCli','alpacaPaper'],['alpacaData','alpacaPaper'],
+ ['execute','vCards'],['daily','vCards'],
+ // delivery
+ ['daily','deliver'],['deliver','telegram'],
+ // audit
+ ['targets','audit'],['alpacaPaper','audit'],['audit','vMeta'],['audit','telegram'],
+ // reflection
+ ['review','metrics'],['alpacaPaper','review'],['review','vReflect'],['review','telegram'],
+ // vault engine (shown in the vault view)
+ ['daily','vault'],['execute','vault'],['review','vault'],['audit','vault'],
+ ['vault','vMeta'],['vault','vCards'],['vault','vNav'],['vault','vReflect'],
+ // spec / mirror
+ ['pdf','targets'],['targets','portfolioMd'],
+];
+
+// ─────────────────────────────────────────────────────────────────────────
+// LAYOUTS
+// ─────────────────────────────────────────────────────────────────────────
+const W=1600,H=1000;
+function pos(x,y,w=170,h=42){return {x,y,w,h}}
+function hideAll(L,ids){ids.forEach(id=>L[id]=pos(-9999,-9999,0,0));}
+const ALL=Object.keys(NODES);
+
+function layoutPipeline(){
+ const L={};
+ // orchestration
+ L.run=pos(40,80,150,40); L.sched=pos(210,80,150,40);
+ L.cfg=pos(40,132,150,38); L.catch=pos(210,132,150,38);
+ L.daily=pos(95,186,200,50);
+ // inputs
+ L.safety=pos(40,285,150,44); L.killfile=pos(210,290,140,36);
+ L.state=pos(40,345,150,46);
+ L.hiwater=pos(40,410,150,40); L.metrics=pos(210,410,150,44);
+ // overlay
+ L.dailyA=pos(390,285,150,46);
+ L.fund=pos(390,350,110,40); L.macro=pos(510,350,110,40);
+ L.bias=pos(390,415,230,48);
+ // planning
+ L.targets=pos(660,140,200,46); L.occ=pos(660,205,200,40);
+ L.rules=pos(660,270,200,50); L.build=pos(660,345,200,46);
+ L.leverage=pos(660,415,200,40);
+ // execute
+ L.execute=pos(930,180,220,54); L.alpacaCli=pos(930,255,220,42);
+ L.alpacaData=pos(930,315,220,42); L.deliver=pos(930,380,220,44);
+ L.audit=pos(930,445,220,44);
+ // external / spec
+ L.alpacaPaper=pos(1210,150,170,46); L.dailyVault=pos(1210,215,170,44);
+ L.telegram=pos(1210,285,170,40); L.pdf=pos(1210,345,170,38);
+ L.portfolioMd=pos(1210,400,170,38); L.fixtures=pos(1210,455,170,38);
+ // vault band
+ L.vMeta=pos(60,808,200,40); L.vCards=pos(330,808,200,40);
+ L.vNav=pos(600,808,200,40); L.vReflect=pos(870,808,200,40);
+ // detail nodes not central here
+ hideAll(L,['review','vault','tierA','tierB','tierD','clustercap','poscap','deploy']);
+ return L;
+}
+
+function layoutTimeline(){
+ const L={}; hideAll(L,ALL);
+ const xAt=(h,m=0)=>90+((h*60+m)-6*60)/(8*60)*(W-260);
+ L.sched=pos(60,70,160,40); L.catch=pos(250,70,170,40);
+ L.daily=pos(xAt(10)-110,250,230,60);
+ L.review=pos(W-320,250,250,60);
+ // pipeline mini under the daily window
+ L.state=pos(xAt(10)-270,560,150,38); L.bias=pos(xAt(10)-100,560,160,38);
+ L.rules=pos(xAt(10)+80,560,150,38);
+ L.build=pos(xAt(10)-190,625,160,38); L.execute=pos(xAt(10)-10,625,150,38);
+ L.audit=pos(xAt(10)+170,625,150,38);
+ L.vCards=pos(xAt(10)+250,560,150,38);
+ return L;
+}
+
+function layoutLifecycle(){
+ const L={}; hideAll(L,ALL);
+ // target model + engine
+ L.targets=pos(120,110,220,52); L.rules=pos(120,190,220,50);
+ L.bias=pos(120,540,170,46);
+ // equity sleeve (Tier A/B) decisions
+ L.tierA=pos(80,300,200,46); L.tierB=pos(300,300,200,46);
+ L.poscap=pos(80,372,200,44); L.clustercap=pos(300,372,200,44);
+ L.deploy=pos(190,444,200,44);
+ // moonshot sleeve (Tier D)
+ L.tierD=pos(720,300,240,52); L.occ=pos(720,382,240,44);
+ L.build=pos(1010,190,240,48);
+ // build & execute band
+ L.leverage=pos(310,548,200,44); L.execute=pos(560,548,240,54);
+ L.alpacaCli=pos(560,632,240,44); L.audit=pos(860,548,220,50);
+ L.vNav=pos(1110,548,200,46);
+ L.alpacaPaper=pos(1110,632,200,46);
+ return L;
+}
+
+function layoutVault(){
+ const L={}; hideAll(L,ALL);
+ // producers
+ const prod=['daily','state','rules','execute','audit'];
+ prod.forEach((id,i)=>{L[id]=pos(60,100+i*82,170,50);});
+ L.dailyVault=pos(60,540,170,46); L.fixtures=pos(60,612,170,46);
+ // vault engine + files
+ L.vault=pos(700,95,240,46);
+ L.vMeta=pos(700,175,240,50); L.vCards=pos(700,290,240,50);
+ L.vNav=pos(700,405,240,50); L.vReflect=pos(700,520,240,50);
+ // consumers
+ L.bias=pos(1120,160,240,48); L.build=pos(1120,280,240,48);
+ L.review=pos(1120,400,240,48); L.hiwater=pos(1120,520,240,48);
+ return L;
+}
+
+function layoutLLM(){
+ const L={}; hideAll(L,ALL);
+ // overlay inputs
+ L.dailyVault=pos(80,300,190,52); L.fixtures=pos(80,400,190,46);
+ L.dailyA=pos(340,300,200,50);
+ L.fund=pos(320,395,155,42); L.macro=pos(500,395,155,42);
+ L.bias=pos(630,300,220,52);
+ // rule-authorized candidates (overlay only re-orders)
+ L.rules=pos(940,170,210,48); L.build=pos(940,250,210,46);
+ L.deploy=pos(940,330,210,44); L.clustercap=pos(940,410,210,44);
+ L.poscap=pos(940,490,210,44); L.targets=pos(940,570,210,44);
+ L.execute=pos(1250,340,180,50);
+ return L;
+}
+
+const LAYOUTS={
+ pipeline:layoutPipeline(), timeline:layoutTimeline(),
+ lifecycle:layoutLifecycle(), vault:layoutVault(), llm:layoutLLM(),
+};
+
+// ─────────────────────────────────────────────────────────────────────────
+// RENDER ENGINE
+// ─────────────────────────────────────────────────────────────────────────
+const SVGNS='http://www.w3.org/2000/svg';
+const $=s=>document.querySelector(s);
+const elNodes=$('#nodes'),elEdges=$('#edges'),elZones=$('#zones');
+let CURRENT_VIEW='pipeline',SELECTED=null,HIGHLIGHTED=null,PLAYING=false;
+let layout=LAYOUTS.pipeline;
+function clear(el){while(el.firstChild)el.removeChild(el.firstChild);}
+function makeEl(n,a={},p=null,t=null){
+ const e=document.createElementNS(SVGNS,n);
+ for(const[k,v]of Object.entries(a))e.setAttribute(k,v);
+ if(t!=null)e.textContent=t; if(p)p.appendChild(e); return e;
+}
+
+const ZONES={
+ pipeline:[
+  {x:20,y:60,w:360,h:170,t:'L0 — ORCHESTRATION'},
+  {x:20,y:265,w:360,h:200,t:'INPUTS — snapshot + safety'},
+  {x:380,y:265,w:255,h:200,t:'DAILY-ANALYSIS OVERLAY'},
+  {x:640,y:120,w:250,h:340,t:'L2 — TARGET MODEL / PLANNING'},
+  {x:910,y:150,w:260,h:340,t:'L3 — EXECUTE / DELIVER'},
+  {x:1190,y:120,w:210,h:370,t:'EXTERNAL / SPEC'},
+  {x:40,y:790,w:1030,h:80,t:'VAULT (file persistence)'},
+ ],
+ timeline:[],
+ lifecycle:[
+  {x:60,y:90,w:480,h:150,t:'TARGET MODEL (targets.rs + rules.rs)'},
+  {x:60,y:270,w:480,h:230,t:'EQUITY SLEEVE — Tier A/B · caps + stops'},
+  {x:690,y:270,w:400,h:180,t:'MOONSHOT SLEEVE — Tier D · LEAPS + micro-cap'},
+  {x:990,y:90,w:290,h:150,t:'PHASED BUILD'},
+  {x:290,y:518,w:1040,h:170,t:'EXECUTE — no-leverage · marketable LIMIT'},
+ ],
+ vault:[
+  {x:40,y:75,w:300,h:H-160,t:'PRODUCERS'},
+  {x:660,y:75,w:320,h:H-160,t:'VAULT ENGINE + FILES'},
+  {x:1100,y:75,w:300,h:H-160,t:'CONSUMERS'},
+ ],
+ llm:[
+  {x:40,y:250,w:560,h:280,t:'DAILY-ANALYSIS OVERLAY (never authorizes)'},
+  {x:900,y:130,w:300,h:520,t:'RULE-AUTHORIZED CANDIDATES — re-ordered, never created'},
+ ],
+};
+
+function renderZones(view){
+ clear(elZones);
+ if(view==='timeline'){
+  const xAt=(h,m=0)=>90+((h*60+m)-6*60)/(8*60)*(W-260);
+  for(let h=6;h<=14;h++){
+   const x=xAt(h);
+   makeEl('line',{x1:x,y1:55,x2:x,y2:H-30,stroke:'#1c2742','stroke-dasharray':'2 6'},elZones);
+   const lab=h<12?`${h} AM`:(h===12?'12 PM':`${h-12} PM`);
+   makeEl('text',{x:x,y:46,class:'zone-label','text-anchor':'middle'},elZones,lab);
+  }
+  const xd=xAt(10);
+  makeEl('line',{x1:xd,y1:55,x2:xd,y2:H-30,stroke:'#7cf2c0','stroke-width':1.5,'stroke-dasharray':'4 3'},elZones);
+  makeEl('text',{x:xd+6,y:62,class:'zone-label',fill:'#7cf2c0'},elZones,'DAILY WINDOW 10:00 PT');
+  makeEl('text',{x:30,y:170,class:'zone-label'},elZones,'BOOT / CATCH-UP');
+  makeEl('text',{x:30,y:540,class:'zone-label'},elZones,'BUILD → MAINTENANCE CYCLE');
+  makeEl('text',{x:W-320,y:170,class:'zone-label'},elZones,'QUARTERLY · 1st weekday of Q');
+  return;
+ }
+ for(const z of (ZONES[view]||[])){
+  makeEl('rect',{x:z.x,y:z.y,width:z.w,height:z.h,class:'zone-bg',rx:8},elZones);
+  makeEl('text',{x:z.x+12,y:z.y+18,class:'zone-label'},elZones,z.t);
+ }
+}
+
+function renderNodes(view){
+ clear(elNodes);
+ layout=LAYOUTS[view];
+ for(const[id,n]of Object.entries(NODES)){
+  const p=layout[id];
+  if(!p||p.x<-1000)continue;
+  const cls=`node ${n.l?'layer-'+n.l:''} ${n.kind?'kind-'+n.kind:''} ${n.svc?'svc-'+n.svc:''}`;
+  const g=makeEl('g',{class:cls,'data-id':id},elNodes);
+  if(n.kind==='vault'){
+   const{x,y,w,h}=p,t=8;
+   makeEl('polygon',{points:`${x+t},${y} ${x+w},${y} ${x+w-t},${y+h} ${x},${y+h}`},g);
+  }else if(n.kind==='guard'){
+   const{x,y,w,h}=p,t=14;
+   makeEl('polygon',{points:`${x+t},${y} ${x+w-t},${y} ${x+w},${y+h/2} ${x+w-t},${y+h} ${x+t},${y+h} ${x},${y+h/2}`},g);
+  }else{
+   makeEl('rect',{x:p.x,y:p.y,width:p.w,height:p.h,rx:6},g);
+  }
+  let sub=n.sub||'';
+  if((view==='timeline'||view==='lifecycle')&&n.cron)sub=n.cron;
+  if(view==='pipeline'&&n.cron&&!n.sub)sub='';
+  const ty=p.y+(sub?p.h/2-2:p.h/2+4);
+  makeEl('text',{x:p.x+p.w/2,y:ty,'text-anchor':'middle'},g,n.name);
+  if(sub)makeEl('text',{x:p.x+p.w/2,y:ty+12,'text-anchor':'middle',class:'sub'},g,sub);
+  g.addEventListener('click',e=>{e.stopPropagation();selectNode(id);});
+  g.addEventListener('mouseenter',()=>highlight(id));
+  g.addEventListener('mouseleave',()=>highlight(null));
+ }
+}
+
+function renderEdges(){
+ clear(elEdges);
+ for(const[from,to]of EDGES){
+  const a=layout[from],b=layout[to];
+  if(!a||!b||a.x<-1000||b.x<-1000)continue;
+  makeEl('path',{d:manhattan(a,b),class:'edge','data-from':from,'data-to':to},elEdges);
+ }
+}
+function manhattan(a,b){
+ const ax=a.x+a.w/2,ay=a.y+a.h/2,bx=b.x+b.w/2,by=b.y+b.h/2;
+ if(Math.abs(bx-ax)>Math.abs(by-ay)){
+  const p1=bx>ax?{x:a.x+a.w,y:ay}:{x:a.x,y:ay};
+  const p2=bx>ax?{x:b.x,y:by}:{x:b.x+b.w,y:by};
+  const mx=(p1.x+p2.x)/2;
+  return `M ${p1.x},${p1.y} L ${mx},${p1.y} L ${mx},${p2.y} L ${p2.x},${p2.y}`;
+ }
+ const p1=by>ay?{x:ax,y:a.y+a.h}:{x:ax,y:a.y};
+ const p2=by>ay?{x:bx,y:b.y}:{x:bx,y:b.y+b.h};
+ const my=(p1.y+p2.y)/2;
+ return `M ${p1.x},${p1.y} L ${p1.x},${my} L ${p2.x},${my} L ${p2.x},${p2.y}`;
+}
+
+function highlight(id){
+ if(PLAYING)return;
+ HIGHLIGHTED=id;
+ const nodes=elNodes.querySelectorAll('.node'),edges=elEdges.querySelectorAll('.edge');
+ if(!id){nodes.forEach(n=>n.classList.remove('dim','highlight'));
+  edges.forEach(e=>e.classList.remove('dim','highlight'));return;}
+ const inv=new Set([id]);let fr=[id];
+ while(fr.length){const nx=[];
+  for(const f of fr){
+   EDGES.filter(([a,b])=>a===f&&!inv.has(b)).forEach(([,b])=>{inv.add(b);nx.push(b);});
+   EDGES.filter(([a,b])=>b===f&&!inv.has(a)).forEach(([a])=>{inv.add(a);nx.push(a);});
+  }
+  fr=nx; if(inv.size>250)break;}
+ nodes.forEach(n=>{const nid=n.getAttribute('data-id');
+  if(inv.has(nid)){n.classList.remove('dim');n.classList.toggle('highlight',nid===id);}
+  else{n.classList.add('dim');n.classList.remove('highlight');}});
+ edges.forEach(e=>{const f=e.getAttribute('data-from'),t=e.getAttribute('data-to');
+  if(f===id||t===id){e.classList.add('highlight');e.classList.remove('dim');}
+  else if(inv.has(f)&&inv.has(t)){e.classList.remove('dim','highlight');}
+  else{e.classList.add('dim');e.classList.remove('highlight');}});
+}
+
+function selectNode(id){
+ SELECTED=id; const n=NODES[id];
+ if(!n){renderEmptyPanel();return;}
+ const p=$('#panel'); p.innerHTML='';
+ const lmap={L0:'L0',L1:'L1',L2:'L2',L25:'L2.5/L3.5',L3:'L3',L4:'L4',LLM:'LLM'};
+ const badge=n.l?`<span class="badge">${lmap[n.l]||n.l}</span>`
+   :n.kind==='vault'?'<span class="badge">vault</span>'
+   :n.kind==='ext'?'<span class="badge">external</span>'
+   :n.kind==='guard'?'<span class="badge">guard / decision</span>'
+   :n.kind==='data'?'<span class="badge">data file</span>':'';
+ p.insertAdjacentHTML('beforeend',`<h2>${n.name} ${badge}</h2>`);
+ if(n.desc)p.insertAdjacentHTML('beforeend',`<div class="desc">${n.desc}</div>`);
+ const kv=[];
+ if(n.spec)kv.push(['source',`<code>${n.spec}</code>`]);
+ if(n.cron)kv.push(['fires',n.cron]);
+ if(n.out)kv.push(['writes',`<code>${n.out}</code>`]);
+ if(n.svc)kv.push(['kind',`external — ${n.svc}`]);
+ if(kv.length){p.insertAdjacentHTML('beforeend','<h3>Properties</h3>');
+  let h='<div class="kv">';for(const[k,v]of kv)h+=`<div class="k">${k}</div><div>${v}</div>`;
+  p.insertAdjacentHTML('beforeend',h+'</div>');}
+ if(n.touch&&n.touch.length){p.insertAdjacentHTML('beforeend','<h3>Touches</h3>');
+  p.insertAdjacentHTML('beforeend',n.touch.map(m=>`<span class="pill ${m}">${NODES[m]?NODES[m].name:m}</span>`).join(''));}
+ const up=EDGES.filter(([,b])=>b===id).map(([a])=>a);
+ const dn=EDGES.filter(([a])=>a===id).map(([,b])=>b);
+ if(up.length){p.insertAdjacentHTML('beforeend','<h3>Reads from / triggered by</h3>');
+  p.insertAdjacentHTML('beforeend','<ul>'+[...new Set(up)].map(u=>`<li>${NODES[u]?.name||u}</li>`).join('')+'</ul>');}
+ if(dn.length){p.insertAdjacentHTML('beforeend','<h3>Writes to / triggers</h3>');
+  p.insertAdjacentHTML('beforeend','<ul>'+[...new Set(dn)].map(d=>`<li>${NODES[d]?.name||d}</li>`).join('')+'</ul>');}
+ highlight(id);
+}
+function renderEmptyPanel(){
+ $('#panel').innerHTML=`<div class="empty"><div>← click any node</div>
+   <div class="hint">hover highlights upstream + downstream<br>type in the search box to filter<br>▶ animates a cycle through the stack<br>scroll = zoom · drag = pan · dbl-click = reset</div></div>`;
+}
+
+$('#search').addEventListener('input',e=>{
+ const q=e.target.value.trim().toLowerCase();
+ const nodes=elNodes.querySelectorAll('.node'),edges=elEdges.querySelectorAll('.edge');
+ if(!q){nodes.forEach(n=>n.classList.remove('dim'));edges.forEach(x=>x.classList.remove('dim'));return;}
+ const m=new Set();
+ for(const[id,n]of Object.entries(NODES)){
+  const hay=`${n.name} ${n.spec||''} ${n.desc||''} ${n.cron||''} ${n.svc||''} ${(n.touch||[]).join(' ')}`.toLowerCase();
+  if(hay.includes(q))m.add(id);
+ }
+ nodes.forEach(n=>n.classList.toggle('dim',!m.has(n.getAttribute('data-id'))));
+ edges.forEach(x=>{const f=x.getAttribute('data-from'),t=x.getAttribute('data-to');
+  x.classList.toggle('dim',!(m.has(f)&&m.has(t)));});
+});
+$('#canvas').addEventListener('click',()=>{SELECTED=null;renderEmptyPanel();highlight(null);});
+
+function setView(v){
+ CURRENT_VIEW=v;
+ document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.view===v));
+ layout=LAYOUTS[v]; renderZones(v); renderNodes(v); renderEdges();
+ if(HIGHLIGHTED)highlight(HIGHLIGHTED); if(SELECTED)selectNode(SELECTED);
+}
+document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=>setView(t.dataset.view)));
+
+const FLOW=[
+ {l:'Boot — scheduler fires the daily 10:00 PT window (or startup catch-up does)',n:['sched','catch','run','daily'],d:1400},
+ {l:'Safety gate — filesystem kill-switch + PA-paper-account guard (PA3OI8CO1MYV)',n:['daily','safety','killfile'],d:1300},
+ {l:'Snapshot — PortfolioState from Alpaca account+positions; ratchet high-water; record NAV',n:['safety','state','hiwater','vNav','metrics'],d:1500},
+ {l:'Daily-analysis overlay → SignalBias (conviction + fundamentals tilt + macro deploy-mult)',n:['dailyA','fund','macro','bias'],d:1600},
+ {l:'Plan against the 24-position TARGETS — phased build OR the 5-rule maintenance engine',n:['targets','rules','build'],d:1500},
+ {l:'No-leverage cap → execute marketable-LIMIT (LEAPS resolve to an OCC symbol)',n:['occ','leverage','execute'],d:1500},
+ {l:'Submit to Alpaca paper — stocks (whole-share) + single-leg long-call LEAPS',n:['execute','alpacaCli','alpacaData','alpacaPaper'],d:1500},
+ {l:'Persist cards + build digest → Telegram',n:['daily','vCards','deliver','telegram'],d:1400},
+ {l:'Post-cycle reconcile audit — short / non-long-call / untracked → ALARM',n:['audit','vMeta','alpacaPaper'],d:1500},
+];
+function setFlow(active){
+ elEdges.querySelectorAll('.edge').forEach(e=>{
+  const f=e.getAttribute('data-from'),t=e.getAttribute('data-to');
+  if(active.includes(f)&&active.includes(t)){e.classList.add('flow-active');e.classList.remove('dim');}
+  else e.classList.remove('flow-active');});
+ elNodes.querySelectorAll('.node').forEach(n=>{
+  const id=n.getAttribute('data-id');
+  if(active.includes(id)){n.classList.add('highlight');n.classList.remove('dim');}
+  else{n.classList.remove('highlight');n.classList.add('dim');}});
+}
+async function play(){
+ if(PLAYING){stopPlay();return;}
+ PLAYING=true; const b=$('#play');b.classList.add('playing');b.textContent='■ Stop';
+ const s=$('#anim-status');s.classList.add('show'); setView('pipeline');
+ for(let i=0;i<FLOW.length;i++){
+  if(!PLAYING)break;
+  s.textContent=`${i+1}/${FLOW.length}  ·  ${FLOW[i].l}`;
+  setFlow(FLOW[i].n); await sleep(FLOW[i].d);
+ }
+ stopPlay();
+}
+function stopPlay(){
+ PLAYING=false; $('#play').classList.remove('playing'); $('#play').textContent='▶ Play daily flow';
+ $('#anim-status').classList.remove('show');
+ elEdges.querySelectorAll('.edge').forEach(e=>e.classList.remove('flow-active','dim'));
+ elNodes.querySelectorAll('.node').forEach(n=>n.classList.remove('highlight','dim'));
+}
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+$('#play').addEventListener('click',play);
+
+// legend
+$('#legend').innerHTML=[
+ ['#141d3a','#9bb4ff','L0 — orchestration / scheduler / config'],
+ ['#102745','#54b1ff','L1 — snapshot + daily-analysis overlay'],
+ ['#1c1640','#b985ff','L2 — target model + rebalance planning'],
+ ['#0e2b22','#7cf2c0','L3 — execution + delivery + audit'],
+ ['#332615','#ffd166','L4 — quarterly reflection + vault'],
+ ['#2a1622','#ff6b9b','guard / decision (hexagon)'],
+ ['#171c2c','#9aa6c4','vault file (dashed)'],
+ ['#10172a','#5a657f','data / spec file'],
+ ['#1a131e','#857094','external service'],
+].map(([bg,br,t])=>`<div class="row"><div class="sw" style="background:${bg};border:1px solid ${br}"></div><span class="label">${t}</span></div>`).join('');
+
+// pan / zoom
+const svg=$('#canvas');
+let vb={x:0,y:0,w:1600,h:1000},panning=false,ps=null,po=null;
+function applyVB(){svg.setAttribute('viewBox',`${vb.x} ${vb.y} ${vb.w} ${vb.h}`);}
+svg.addEventListener('wheel',e=>{
+ e.preventDefault();
+ const f=e.deltaY>0?1.1:0.9, r=svg.getBoundingClientRect();
+ const mx=((e.clientX-r.left)/r.width)*vb.w+vb.x, my=((e.clientY-r.top)/r.height)*vb.h+vb.y;
+ vb.x=mx-(mx-vb.x)*f; vb.y=my-(my-vb.y)*f; vb.w*=f; vb.h*=f; applyVB();
+},{passive:false});
+svg.addEventListener('mousedown',e=>{panning=true;ps={x:e.clientX,y:e.clientY};po={...vb};});
+window.addEventListener('mousemove',e=>{
+ if(!panning)return; const r=svg.getBoundingClientRect();
+ vb.x=po.x-(e.clientX-ps.x)/r.width*vb.w; vb.y=po.y-(e.clientY-ps.y)/r.height*vb.h; applyVB();
+});
+window.addEventListener('mouseup',()=>panning=false);
+svg.addEventListener('dblclick',()=>{vb={x:0,y:0,w:1600,h:1000};applyVB();});
+
+setView('pipeline');
+</script>
+</body>
+</html>
