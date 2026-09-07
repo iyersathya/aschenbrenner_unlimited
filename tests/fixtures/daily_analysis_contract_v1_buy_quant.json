@@ -29,6 +29,17 @@
     },
     "days_to_earnings": 53,
     "expected_move_30d_pct": 8.14,
+    "field_quality": {
+      "avg_dollar_volume_20d": "verified",
+      "days_to_earnings": "verified",
+      "expected_move_30d_pct": "verified",
+      "iv": "verified",
+      "iv_rank": "verified",
+      "macro_score": "verified",
+      "next_earnings_date": "verified",
+      "price": "verified",
+      "realized_vol_20d": "verified"
+    },
     "float_shares": 15200000000,
     "free_float_pct": 99.5,
     "fundamentals": {
@@ -58,6 +69,7 @@
     "iv_vs_realized": 1.26,
     "macro_score": 61,
     "next_earnings_date": "2026-07-31",
+    "observed_at": "2026-06-08T03:05:00Z",
     "price": 196.5,
     "range_position_52w": 0.74,
     "realized_vol_20d": 22.5,
