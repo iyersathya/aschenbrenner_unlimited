@@ -107,6 +107,15 @@ impl AlpacaClient {
         Some(Self::new(&cfg.alpaca_api_key, &cfg.alpaca_secret_key, &cfg.alpaca_base_url))
     }
 
+    /// Trading-calendar lookup: `Some(true)` when Alpaca lists a session for
+    /// `date` (YYYY-MM-DD), `Some(false)` on a weekend/holiday, `None` when
+    /// the request fails. Read-only. Added 2026-09-07 after the ARMED daily
+    /// window ran on Labor Day with only a weekday check in front of it.
+    pub async fn is_trading_day(&self, date: &str) -> Option<bool> {
+        let d = self.get(&format!("v2/calendar?start={}&end={}", date, date)).await.ok()?;
+        calendar_has_session(&d, date)
+    }
+
     fn req(&self, rb: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         rb.header("APCA-API-KEY-ID", &self.api_key)
             .header("APCA-API-SECRET-KEY", &self.secret_key)
@@ -287,5 +296,39 @@ fn order_from_json(d: &Value) -> Order {
         filled_qty: to_s("filled_qty", "0"),
         filled_avg_price: d.get("filled_avg_price").and_then(|v| v.as_str()).map(String::from),
         limit_price: d.get("limit_price").and_then(|v| v.as_str()).map(String::from),
+    }
+}
+
+/// Pure half of `is_trading_day`: `Some(true)` when the calendar array lists
+/// `date`, `Some(false)` when it is an array without it, `None` when the body
+/// is not an array (auth error / outage payload) — the caller treats `None`
+/// as "unknown", never as "open".
+pub fn calendar_has_session(body: &Value, date: &str) -> Option<bool> {
+    let arr = body.as_array()?;
+    Some(arr.iter().any(|c| c.get("date").and_then(|v| v.as_str()) == Some(date)))
+}
+
+#[cfg(test)]
+mod calendar_tests {
+    use super::calendar_has_session;
+    use serde_json::json;
+
+    #[test]
+    fn holiday_is_empty_array() {
+        // Labor Day 2026-09-07: GET /v2/calendar?start=2026-09-07&end=2026-09-07 → []
+        assert_eq!(calendar_has_session(&json!([]), "2026-09-07"), Some(false));
+    }
+
+    #[test]
+    fn session_day_lists_the_date() {
+        let body = json!([{"date":"2026-09-08","open":"09:30","close":"16:00"}]);
+        assert_eq!(calendar_has_session(&body, "2026-09-08"), Some(true));
+        // a neighbouring session does not count for the asked date
+        assert_eq!(calendar_has_session(&body, "2026-09-07"), Some(false));
+    }
+
+    #[test]
+    fn non_array_body_is_unknown_not_open() {
+        assert_eq!(calendar_has_session(&json!({"message":"forbidden"}), "2026-09-08"), None);
     }
 }

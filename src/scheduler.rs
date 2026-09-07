@@ -1,4 +1,6 @@
-//! Daily scheduler — a blocking loop on the configured timezone. This is a
+//! Daily scheduler — a blocking loop on the configured timezone. The window
+//! and the boot catch-up both require a session on the Alpaca calendar
+//! (fail closed), not merely a weekday. This is a
 //! long-horizon hold, so the cadence is deliberately sparse: one tracking +
 //! rebalance window per weekday around midday (10:00 PT ≈ 13:00 ET, a calm
 //! window with good fills), plus a quarterly review on the first weekday of
@@ -8,6 +10,7 @@
 //! maintenance once the 16-name book is within band of target — so the same loop
 //! drives both the initial accumulation and the steady-state rebalancing.
 
+use crate::core::alpaca::AlpacaClient;
 use crate::core::config::get_config;
 use crate::core::vault::VaultClient;
 use crate::lifecycle::{audit, daily, daily::RunMode, review};
@@ -31,6 +34,35 @@ fn is_weekday(wd: Weekday) -> bool {
     !matches!(wd, Weekday::Sat | Weekday::Sun)
 }
 
+/// Session gate for the ARMED window (2026-09-07). `is_weekday` alone let the
+/// daily cycle plan + execute on Labor Day against Friday's closes — zero
+/// submits that day was arithmetic, not a guard: a ≥1-unit plan would have
+/// queued a DAY limit into Tuesday's open. Asks the Alpaca calendar once per
+/// date; FAILS CLOSED (no keys, API error → skip the window and say so) —
+/// an unreachable broker is not a day to submit on, and the next weekday
+/// window is at most 24 h away.
+/// Returns `Some(true)` = session, `Some(false)` = holiday (remembered for the
+/// date), `None` = lookup failed (retried on the next minute of the window,
+/// never run).
+async fn is_session_day(date: chrono::NaiveDate) -> Option<bool> {
+    let d = date.format("%Y-%m-%d").to_string();
+    let Some(client) = AlpacaClient::from_config(get_config()) else {
+        tracing::warn!("no Alpaca keys — cannot confirm {d} is a session; daily window skipped (fail closed)");
+        return None;
+    };
+    match client.is_trading_day(&d).await {
+        Some(true) => Some(true),
+        Some(false) => {
+            tracing::info!("{d} is a market holiday (Alpaca calendar) — daily window skipped");
+            Some(false)
+        }
+        None => {
+            tracing::warn!("calendar lookup failed for {d} — daily window skipped this minute (fail closed)");
+            None
+        }
+    }
+}
+
 fn quarter(month: u32) -> u32 {
     (month - 1) / 3 + 1
 }
@@ -48,7 +80,9 @@ pub async fn run_scheduler(armed: bool) {
     let now = chrono::Utc::now().with_timezone(&tz);
     if cfg.catchup_on_start && is_weekday(now.weekday()) && now.hour() >= DAILY_HOUR {
         let key = format!("daily@{}", now.date_naive());
-        if fired.insert(key) {
+        // Calendar check before the dedupe insert: a holiday or a failed
+        // lookup must not consume today's key.
+        if is_session_day(now.date_naive()).await == Some(true) && fired.insert(key) {
             tracing::info!("catch-up: running missed daily window");
             println!("{}", daily::run(RunMode::Build, armed).await);
             run_reconcile_audit().await;
@@ -71,7 +105,20 @@ pub async fn run_scheduler(armed: bool) {
             }
 
             let key = format!("daily@{date}");
-            if fired.insert(key) {
+            let nokey = format!("nosession@{date}");
+            let go = if fired.contains(&key) || fired.contains(&nokey) {
+                false
+            } else {
+                match is_session_day(date).await {
+                    Some(true) => true,
+                    Some(false) => {
+                        fired.insert(nokey);
+                        false
+                    }
+                    None => false, // retry next minute of the window
+                }
+            };
+            if go && fired.insert(key) {
                 tracing::info!("daily window");
                 println!("{}", daily::run(RunMode::Build, armed).await);
                 // Post-cycle reconcile: catches anything the cycle's orders (or
