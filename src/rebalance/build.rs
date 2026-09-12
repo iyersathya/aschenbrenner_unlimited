@@ -80,7 +80,13 @@ pub fn build_complete(state: &PortfolioState, cfg: &AppConfig) -> bool {
         }
         let w = current_mv(t, state, cfg) / nav;
         let tgt = targets::invested_target_weight(t.ticker, cfg.cash_buffer_pct);
-        (w - tgt).abs() <= band || w >= tgt
+        // The band is a tolerance on THIS name's position, not on NAV. Comparing a
+        // weight gap against `band` (3% of NAV) declared a 1.25%-of-NAV micro-cap slot
+        // "complete" while holding nothing of it — the 2026-09-12 audit found the
+        // sibling sleeve reporting "book complete" at 72% invested against a 95%
+        // target for exactly this reason. Scale by `tgt` so the tolerance is
+        // proportional to the position being filled.
+        (w - tgt).abs() <= band * tgt || w >= tgt
     })
 }
 
@@ -101,7 +107,15 @@ pub fn plan_build(state: &PortfolioState, cfg: &AppConfig, asof: NaiveDate, star
     // leaving the LEAPS stage $1,160 (< 1 contract) and MoonMicro never
     // reached (0 IONQ/ASTS cards in 53 build days). Only real shortfalls
     // (> band) are planned, so the cash flows down to the later stages.
-    let band_d = cfg.rebalance_band_pct * nav;
+    //
+    // 2026-09-12: that filter first shipped as `band_pct * nav`, a single dollar
+    // threshold applied to every name. At NAV $36k the band was $1,082 while ten of
+    // the twenty-two targets have a FULL position worth less than that (both
+    // micro-cap slots $450, OKLO_LEAPS $450, seven names at $900), so those ten
+    // could never be planned from a zero base at any cash level — 21.2% of NAV
+    // structurally unreachable, and a dry-run that planned exactly one name.
+    // The band is a per-position tolerance: scale it by that name's own target.
+    let band_d = |label: &str| cfg.rebalance_band_pct * target_d(label);
     let mut actions = vec![];
 
     for stage in [Stage::Floor, Stage::Asymmetric, Stage::MoonLeaps, Stage::MoonMicro] {
@@ -113,7 +127,7 @@ pub fn plan_build(state: &PortfolioState, cfg: &AppConfig, asof: NaiveDate, star
             .filter(|t| stage_of(t) == stage)
             .filter(|t| targets::instrument_symbol(t, cfg).is_some())
             .map(|t| (t, (target_d(t.ticker) - current_mv(t, state, cfg)).max(0.0)))
-            .filter(|(_, short)| *short > 1.0 && *short > band_d)
+            .filter(|(t, short)| *short > 1.0 && *short > band_d(t.ticker))
             .collect();
         names.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         if names.is_empty() {
@@ -214,22 +228,23 @@ mod tests {
 
     #[test]
     fn sub_band_shortfalls_do_not_consume_deployable() {
-        // 2026-09-03 allocator gap: a Floor name $705 under target (band
-        // $1,062) was planned, debited deployable, then skipped by execute
-        // as "< 1 unit" — every day. Inside the band = complete: not planned.
+        // 2026-09-03 allocator gap: a slice trivially short of target was planned,
+        // debited deployable, then skipped by execute as "< 1 unit" — every day.
+        // Inside the name's OWN band = complete: not planned.
+        // 2026-09-12: the band is scaled by that name's target, so "trivial" means
+        // trivial relative to the position, not relative to NAV.
         use crate::core::alpaca::Position;
         let cfg = AppConfig::default();
         let start = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
         let asof = NaiveDate::from_ymd_opt(2026, 8, 1).unwrap(); // every stage active
-        // Build a book where every Floor name sits 1% of NAV under target
-        // (inside the 3% band) and everything else is unheld.
         let nav = 40_000.0;
+        // Every Floor name sits just inside its own band (half a band short).
         let positions: Vec<Position> = targets::invested()
             .filter(|t| t.tier == Tier::Floor)
             .filter_map(|t| targets::instrument_symbol(t, &cfg).map(|s| (t, s)))
             .map(|(t, sym)| {
                 let tgt = targets::invested_target_weight(t.ticker, cfg.cash_buffer_pct) * nav;
-                let mv = tgt - 0.01 * nav;
+                let mv = tgt - 0.5 * cfg.rebalance_band_pct * tgt;
                 Position {
                     symbol: sym,
                     qty: 1.0,
@@ -248,13 +263,58 @@ mod tests {
         let acts = plan_build(&st, &cfg, asof, start);
         assert!(
             !acts.iter().any(|a| targets::find(&a.ticker).map(|t| t.tier == Tier::Floor).unwrap_or(false)),
-            "sub-band Floor shortfalls must not be planned: {acts:?}"
+            "shortfalls inside a name's own band must not be planned: {acts:?}"
         );
         // and the cash they used to absorb reaches the later stages
         assert!(acts.iter().any(|a| targets::find(&a.ticker).map(|t| t.tier != Tier::Floor).unwrap_or(false)));
-        // a shortfall just outside the band IS still planned
-        let band_d = cfg.rebalance_band_pct * nav;
-        assert!(band_d > 0.01 * nav);
+    }
+
+    #[test]
+    fn every_target_is_reachable_from_a_zero_base() {
+        // 2026-09-12 regression. The band filter first shipped as `band_pct * nav`,
+        // one dollar threshold for every name. At NAV $36k that was $1,082 while ten
+        // of the twenty-two targets have a FULL position worth less than that (both
+        // micro-cap slots and OKLO_LEAPS $450; seven names $900), so none of them
+        // could ever be planned from a zero base — 21.2% of NAV structurally
+        // unreachable, and the live dry-run planned exactly one name. Scaling the
+        // band by each name's own target restores every slot.
+        let cfg = AppConfig::default();
+        let nav = 36_081.0; // the NAV that exposed it
+        for t in targets::invested() {
+            if targets::instrument_symbol(t, &cfg).is_none() {
+                continue; // unset micro-cap slot — nothing to buy
+            }
+            let tgt = targets::invested_target_weight(t.ticker, cfg.cash_buffer_pct) * nav;
+            let band = cfg.rebalance_band_pct * tgt;
+            assert!(
+                tgt > band,
+                "{} target ${tgt:.0} must exceed its own band ${band:.0} or it can never be planned",
+                t.ticker
+            );
+            // and the old NAV-scaled threshold would have excluded it
+            let nav_scaled = cfg.rebalance_band_pct * nav;
+            if tgt <= nav_scaled {
+                assert!(
+                    tgt > band,
+                    "{} was unreachable under the NAV-scaled band and must be reachable now",
+                    t.ticker
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn build_complete_is_not_satisfied_by_an_empty_small_slot() {
+        // The sibling sleeve reported "book complete" at 72% invested against a 95%
+        // target because a weight gap was compared to `band` (3% of NAV): a
+        // 1.25%-of-NAV micro-cap slot holding nothing looked complete. The band is
+        // now proportional to the position, so an empty slot is never complete.
+        let cfg = AppConfig::default();
+        let st = empty_state(40_000.0);
+        assert!(
+            !build_complete(&st, &cfg),
+            "an all-cash book must never report build_complete"
+        );
     }
 
     #[test]
