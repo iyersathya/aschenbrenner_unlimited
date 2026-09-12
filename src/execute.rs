@@ -140,8 +140,24 @@ pub async fn execute_actions(
         };
 
         let mut dollars = a.dollars;
+        let mut note = String::new();
         if a.kind == ActionKind::Buy {
             dollars = dollars.min(buy_budget);
+            let band_d = cfg.rebalance_band_pct * state.nav.max(1e-9);
+            if dollars < r.unit_price && round_up_to_unit(a.dollars, r.unit_price, buy_budget, band_d) {
+                // The planned slice is under one unit, but one unit fits
+                // today's deployable cash (no-leverage cap intact) and lands
+                // no further past target than the rebalance band already
+                // tolerates — buy the unit instead of deferring forever.
+                note = format!(
+                    " [slice ${:.0} rounded up to 1 unit ${:.2}; overshoot ${:.0} ≤ band ${:.0}]",
+                    a.dollars,
+                    r.unit_price,
+                    r.unit_price - a.dollars,
+                    band_d
+                );
+                dollars = r.unit_price;
+            }
             if dollars < r.unit_price {
                 // Distinguish a genuinely cash-capped buy from a planned slice
                 // that is simply smaller than one unit — the old label blamed
@@ -151,7 +167,6 @@ pub async fn execute_actions(
                 // needs |w - target| ≤ band (or w ≥ target); a shortfall wider
                 // than the band that can never round up to one unit is the
                 // structural blocker (day 47+ of "build", 2026-08-25 diagnosis).
-                let band_d = cfg.rebalance_band_pct * state.nav.max(1e-9);
                 let blocker = if a.dollars > band_d && a.dollars < r.unit_price {
                     format!(
                         " — BLOCKS build_complete: shortfall ${:.0} > band ${:.0} but < 1 unit",
@@ -236,10 +251,25 @@ pub async fn execute_actions(
             limit,
             dollars: notional,
             status,
-            reason: a.reason.clone(),
+            reason: format!("{}{}", a.reason, note),
         });
     }
     results
+}
+
+/// Should a planned buy slice below one unit be rounded UP to exactly one
+/// unit? Yes only when the unit fits the remaining deployable cash (the
+/// no-leverage cap stays intact) and the overshoot past the planned slice
+/// is within the rebalance band — i.e. the position ends no further from
+/// target than build_complete()/plan_rebalance already tolerate. A slice
+/// that would overshoot by more than the band (2026-09-03: NVDA LEAPS
+/// $1,160 planned vs a $2,352 contract) still defers — that is a sizing
+/// decision for the operator (raise the slot or pick a cheaper strike).
+pub fn round_up_to_unit(planned: f64, unit_price: f64, buy_budget: f64, band_d: f64) -> bool {
+    planned > 0.0
+        && planned < unit_price
+        && unit_price <= buy_budget
+        && (unit_price - planned) <= band_d
 }
 
 /// Count advisory (non-order) rows for the digest.
@@ -256,6 +286,27 @@ fn skip(a: &Action, why: &str) -> ExecResult {
         dollars: 0.0,
         status: format!("skipped: {why}"),
         reason: a.reason.clone(),
+    }
+}
+
+#[cfg(test)]
+mod round_up_tests {
+    use super::round_up_to_unit;
+
+    #[test]
+    fn rounds_up_only_inside_band_and_budget() {
+        // GEV 2026-09-03: slice $705, unit $942.91, deployable $2,639, band $1,062
+        assert!(round_up_to_unit(705.0, 942.91, 2_639.0, 1_062.0));
+        // KLAC: slice $74, unit $171.74 — overshoot $98 ≤ band
+        assert!(round_up_to_unit(74.0, 171.74, 2_639.0, 1_062.0));
+        // NVDA LEAPS: slice $1,160 vs $2,352 contract — overshoot $1,192 > band → defer
+        assert!(!round_up_to_unit(1_160.0, 2_352.0, 2_639.0, 1_062.0));
+        // unit does not fit the remaining cash budget → never (no-leverage cap)
+        assert!(!round_up_to_unit(705.0, 942.91, 900.0, 1_062.0));
+        // slice already ≥ one unit → not a round-up case
+        assert!(!round_up_to_unit(1_000.0, 942.91, 2_639.0, 1_062.0));
+        // zero / negative slices never buy
+        assert!(!round_up_to_unit(0.0, 942.91, 2_639.0, 1_062.0));
     }
 }
 

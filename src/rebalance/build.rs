@@ -94,6 +94,14 @@ pub fn plan_build(state: &PortfolioState, cfg: &AppConfig, asof: NaiveDate, star
         return vec![];
     }
     let target_d = |label: &str| targets::invested_target_weight(label, cfg.cash_buffer_pct) * nav;
+    // A name whose shortfall is inside the rebalance band already satisfies
+    // build_complete(); planning it anyway debited `deployable` for slices
+    // execute() then skipped as "< 1 unit" — 2026-09-03: $782 of Floor and
+    // $697 of Asymmetric sub-band slices ate $1,479 of the $2,639 deployable,
+    // leaving the LEAPS stage $1,160 (< 1 contract) and MoonMicro never
+    // reached (0 IONQ/ASTS cards in 53 build days). Only real shortfalls
+    // (> band) are planned, so the cash flows down to the later stages.
+    let band_d = cfg.rebalance_band_pct * nav;
     let mut actions = vec![];
 
     for stage in [Stage::Floor, Stage::Asymmetric, Stage::MoonLeaps, Stage::MoonMicro] {
@@ -105,7 +113,7 @@ pub fn plan_build(state: &PortfolioState, cfg: &AppConfig, asof: NaiveDate, star
             .filter(|t| stage_of(t) == stage)
             .filter(|t| targets::instrument_symbol(t, cfg).is_some())
             .map(|t| (t, (target_d(t.ticker) - current_mv(t, state, cfg)).max(0.0)))
-            .filter(|(_, short)| *short > 1.0)
+            .filter(|(_, short)| *short > 1.0 && *short > band_d)
             .collect();
         names.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         if names.is_empty() {
@@ -202,6 +210,51 @@ mod tests {
             asym[0].dollars,
             cfg.build_daily_budget
         );
+    }
+
+    #[test]
+    fn sub_band_shortfalls_do_not_consume_deployable() {
+        // 2026-09-03 allocator gap: a Floor name $705 under target (band
+        // $1,062) was planned, debited deployable, then skipped by execute
+        // as "< 1 unit" — every day. Inside the band = complete: not planned.
+        use crate::core::alpaca::Position;
+        let cfg = AppConfig::default();
+        let start = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
+        let asof = NaiveDate::from_ymd_opt(2026, 8, 1).unwrap(); // every stage active
+        // Build a book where every Floor name sits 1% of NAV under target
+        // (inside the 3% band) and everything else is unheld.
+        let nav = 40_000.0;
+        let positions: Vec<Position> = targets::invested()
+            .filter(|t| t.tier == Tier::Floor)
+            .filter_map(|t| targets::instrument_symbol(t, &cfg).map(|s| (t, s)))
+            .map(|(t, sym)| {
+                let tgt = targets::invested_target_weight(t.ticker, cfg.cash_buffer_pct) * nav;
+                let mv = tgt - 0.01 * nav;
+                Position {
+                    symbol: sym,
+                    qty: 1.0,
+                    market_value: mv,
+                    avg_entry_price: mv,
+                    current_price: mv,
+                    unrealized_plpc: 0.0,
+                    side: "long".into(),
+                    ..Default::default()
+                }
+            })
+            .collect();
+        let invested: f64 = positions.iter().map(|p| p.market_value).sum();
+        let a = AlpacaAccount { cash: nav - invested, portfolio_value: nav, equity: nav, ..Default::default() };
+        let st = PortfolioState::from_alpaca(&a, &positions);
+        let acts = plan_build(&st, &cfg, asof, start);
+        assert!(
+            !acts.iter().any(|a| targets::find(&a.ticker).map(|t| t.tier == Tier::Floor).unwrap_or(false)),
+            "sub-band Floor shortfalls must not be planned: {acts:?}"
+        );
+        // and the cash they used to absorb reaches the later stages
+        assert!(acts.iter().any(|a| targets::find(&a.ticker).map(|t| t.tier != Tier::Floor).unwrap_or(false)));
+        // a shortfall just outside the band IS still planned
+        let band_d = cfg.rebalance_band_pct * nav;
+        assert!(band_d > 0.01 * nav);
     }
 
     #[test]
