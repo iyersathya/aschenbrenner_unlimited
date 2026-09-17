@@ -36,7 +36,6 @@ pub fn plan_rebalance(
     asof: NaiveDate,
 ) -> Vec<Action> {
     let nav = state.nav.max(1e-9);
-    let band = cfg.rebalance_band_pct * nav;
     let mut actions: Vec<Action> = Vec::new();
 
     // Working dollar map over the EQUITY sleeve (Tier A/B). Tier D handled below.
@@ -44,6 +43,18 @@ pub fn plan_rebalance(
         targets::equity_invested().map(|t| (t.ticker.to_string(), state.market_value(t.ticker))).collect();
     let mut cash = state.cash;
     let target_d = |ticker: &str| -> f64 { targets::invested_target_weight(ticker, cfg.cash_buffer_pct) * nav };
+    // The band is a tolerance on THIS name's position, so it scales with that
+    // name's target — the same correction build.rs got on 2026-09-12. As
+    // `band_pct × NAV` ($1,051 on a $35k book) a 2.5%-weight name ($876 target)
+    // could never clear Rule 4's `room > band`, and a Floor profit-take trim
+    // had to exceed 3% of NAV before it was emitted.
+    let band_of = |ticker: &str| -> f64 { cfg.rebalance_band_pct * target_d(ticker) };
+    // Cash-level "anything worth deploying" gate: the smallest per-name band.
+    let band_floor = targets::equity_invested()
+        .map(|t| band_of(t.ticker))
+        .filter(|b| *b > 0.0)
+        .fold(f64::INFINITY, f64::min)
+        .min(cfg.rebalance_band_pct * nav);
 
     let mut trims: HashMap<String, f64> = HashMap::new();
     let mut trim_reasons: HashMap<String, Vec<String>> = HashMap::new();
@@ -66,7 +77,7 @@ pub fn plan_rebalance(
                 }
                 if h.unrealized_plpc >= FLOOR_PT_MULT {
                     let d = h.market_value * FLOOR_PT_TRIM;
-                    if d > band {
+                    if d > band_of(&h.ticker) {
                         add_trim(&h.ticker, d, format!("Floor at {:.1}x → trim {:.0}% and ride", h.unrealized_plpc + 1.0, FLOOR_PT_TRIM * 100.0), &mut trims, &mut trim_reasons);
                         if let Some(m) = mv.get_mut(t.ticker) { *m -= d; }
                         cash += d;
@@ -77,7 +88,7 @@ pub fn plan_rebalance(
                 // NO stop by design. Profit-take only.
                 if h.unrealized_plpc >= ASYM_PT_MULT {
                     let d = h.market_value * ASYM_PT_TRIM;
-                    if d > band {
+                    if d > band_of(&h.ticker) {
                         add_trim(&h.ticker, d, format!("Asymmetric at {:.1}x → trim {:.0}% and ride", h.unrealized_plpc + 1.0, ASYM_PT_TRIM * 100.0), &mut trims, &mut trim_reasons);
                         if let Some(m) = mv.get_mut(t.ticker) { *m -= d; }
                         cash += d;
@@ -94,7 +105,7 @@ pub fn plan_rebalance(
         if cur / nav > cfg.position_trim_trigger_pct {
             let dest = cfg.position_trim_target_pct * nav;
             let sell = cur - dest;
-            if sell > band {
+            if sell > band_of(t.ticker) {
                 add_trim(t.ticker, sell, format!("position {:.1}% > {:.0}% cap → trim to {:.0}%", cur / nav * 100.0, cfg.position_trim_trigger_pct * 100.0, cfg.position_trim_target_pct * 100.0), &mut trims, &mut trim_reasons);
                 *mv.get_mut(t.ticker).unwrap() -= sell;
                 cash += sell;
@@ -132,14 +143,14 @@ pub fn plan_rebalance(
     trim_tickers.sort();
     for t in trim_tickers {
         let d = trims[t];
-        if d > band {
+        if d > band_of(t) {
             actions.push(Action::trim(t, d, trim_reasons.get(t).map(|v| v.join("; ")).unwrap_or_default()));
         }
     }
 
     // ── Rule 4: deploy cash on visible drawdown (equity only) ───────────────
     let mut deployable = cash_available_for_buys(cash, nav, cfg.cash_buffer_pct) * bias.deploy_multiplier();
-    if deployable > band {
+    if deployable > band_floor {
         let mut drawdown: HashMap<String, f64> = HashMap::new();
         for h in &state.holdings {
             if targets::find(&h.ticker).map(|t| matches!(t.tier, Tier::Floor | Tier::Asymmetric)).unwrap_or(false) {
@@ -159,7 +170,7 @@ pub fn plan_rebalance(
             .filter(|t| {
                 let room = target_d(t.ticker) - mv[t.ticker];
                 let name_dd = drawdown.get(t.ticker).copied().unwrap_or(0.0);
-                room > band && (name_dd >= cfg.drawdown_deploy_single_pct || stressed.contains(t.cluster))
+                room > band_of(t.ticker) && (name_dd >= cfg.drawdown_deploy_single_pct || stressed.contains(t.cluster))
             })
             .collect();
         eligible.sort_by(|a, b| {
@@ -167,10 +178,10 @@ pub fn plan_rebalance(
                 .then((target_d(b.ticker) - mv[b.ticker]).partial_cmp(&(target_d(a.ticker) - mv[a.ticker])).unwrap_or(std::cmp::Ordering::Equal))
         });
         for t in eligible {
-            if deployable <= band { break; }
+            if deployable <= band_floor { break; }
             let room = target_d(t.ticker) - mv[t.ticker];
             let take = room.min(deployable);
-            if take > band {
+            if take > band_of(t.ticker) {
                 let dd = drawdown.get(t.ticker).copied().unwrap_or(0.0);
                 actions.push(Action::buy(t.ticker, take, format!("drawdown deploy: down {:.0}% from high, below target → add", dd * 100.0)));
                 deployable -= take;
@@ -235,6 +246,23 @@ mod tests {
     fn state(positions: Vec<Position>, cash: f64, nav: f64) -> PortfolioState {
         let a = AlpacaAccount { cash, portfolio_value: nav, equity: nav, ..Default::default() };
         PortfolioState::from_alpaca(&a, &positions)
+    }
+
+    #[test]
+    fn band_scales_with_the_name_not_nav() {
+        // MTZ (2.5% target ≈ $875 on $35k) down 30% from high and $600 under
+        // target, $2,000 deployable. With band = 3% × NAV = $1,050 the $600
+        // room never cleared Rule 4; per-name band = 3% × $875 ≈ $26 does.
+        let nav = 35_000.0;
+        let tgt = targets::invested_target_weight("MTZ", 0.05) * nav;
+        assert!(tgt < 1_200.0, "test assumes a small target, got {tgt}");
+        let held = (tgt - 600.0).max(50.0);
+        let st = state(vec![pos("MTZ", held, 200.0, -0.30)], 2_000.0 + nav * 0.05, nav);
+        let mut hw = HashMap::new();
+        hw.insert("MTZ".to_string(), 300.0);
+        let acts = plan_rebalance(&st, &cfg(), &hw, &SignalBias::default(), day());
+        let buy = acts.iter().find(|a| a.ticker == "MTZ" && a.kind == ActionKind::Buy).expect("rule-4 buy");
+        assert!((buy.dollars - (tgt - held)).abs() < 1.0, "buys the room, got {}", buy.dollars);
     }
 
     #[test]
