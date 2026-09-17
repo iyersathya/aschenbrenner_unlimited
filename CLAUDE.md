@@ -50,6 +50,24 @@ Production runs via `deploy/aschenbrenner-unlimited.service` (systemd user unit,
 Pass `dry-run` to compute-and-log only. The scheduler's daily window always runs the
 BUILD cycle, which self-promotes to maintenance once every position is within band.
 
+**The maintenance band is per NAME, not per NAV (fixed 2026-09-17).**
+`plan_rebalance()` compared every per-name quantity against
+`rebalance_band_pct × NAV` (~$1,050–1,092 on a $35–36k book): a 3.8%-weight name
+with a $1,362 target had to be 80% under target before a drawdown deploy could
+touch it, and a $896 target could never qualify at all. The 10 maintenance
+sessions of 8/31–9/11 produced **zero** actions while a name sat 46% off its
+high-water and ~$700 under target. `build.rs` was corrected on 2026-09-12;
+`rules.rs` was missed until now. It is `band_of(ticker) = band_pct × target$`
+for every per-name test (Rule 3 trims, the combined-trim emit, Rule 4's
+`room > band` / `take > band`); only the cash-level "is there anything to
+deploy" gate still uses a NAV-scale figure — the smallest per-name band, capped
+at the old NAV band — so dust still stops the loop.
+
+Note the ordering trap that makes the fix inert here today: `plan_rebalance()`
+only runs once `build_complete()` is true, and the NVDA/IREN LEAPS units exceed
+the slot cap, so it stays false. The per-name band is correct in the binary and
+will not be exercised until that deadlock is cleared.
+
 ## Module layout and data flow
 
 ```
