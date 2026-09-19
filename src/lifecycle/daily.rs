@@ -12,9 +12,9 @@ use crate::execute::{execute_actions, ExecResult};
 use crate::portfolio::state::PortfolioState;
 use crate::portfolio::{metrics, targets};
 use crate::rebalance::build::{self, build_complete};
-use crate::rebalance::rules::plan_rebalance;
+use crate::rebalance::rules::{plan_protective, plan_rebalance};
 use crate::rebalance::signal_bias::SignalBias;
-use crate::rebalance::Action;
+use crate::rebalance::{Action, ActionKind};
 use chrono::NaiveDate;
 use chrono_tz::Tz;
 use serde_json::json;
@@ -108,7 +108,26 @@ pub async fn run(mode: RunMode, armed: bool) -> String {
                 // invocation doesn't keep over-buying.
                 (plan_rebalance(&state, cfg, &high_water, &bias, today), "build→maintenance (book complete)")
             } else {
-                (build::plan_build(&state, cfg, today, start), "build")
+                // The risk floor runs WHILE building. Before 2026-09-19 this arm
+                // planned build buys only, so every stop, profit-take and cap
+                // lived behind `build_complete()` — and an unfillable slot (a
+                // $602 tranche against a $1,958 LEAPS unit) held that false for
+                // 65 straight sessions, so none of them ever ran.
+                let protective = plan_protective(&state, cfg, &high_water, &bias, today);
+                // Never accumulate a name the protective rules are trimming or
+                // flagging this session: the risk rule wins, the build waits.
+                let guarded: std::collections::HashSet<String> = protective
+                    .iter()
+                    .filter(|a| a.kind != ActionKind::Buy)
+                    .map(|a| a.ticker.clone())
+                    .collect();
+                let mut acts = protective;
+                acts.extend(
+                    build::plan_build(&state, cfg, today, start)
+                        .into_iter()
+                        .filter(|a| !guarded.contains(&a.ticker)),
+                );
+                (acts, "build + protective rules")
             }
         }
         RunMode::Maintenance => (plan_rebalance(&state, cfg, &high_water, &bias, today), "maintenance"),

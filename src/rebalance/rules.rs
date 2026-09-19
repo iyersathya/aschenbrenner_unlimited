@@ -27,13 +27,51 @@ const MICROCAP_PT_TRIM: f64 = 0.50;
 /// Floor names get a thesis-review flag at -25%; the -35% cut is noted separately.
 const FLOOR_REVIEW_DD: f64 = 0.25;
 
-/// Build today's rebalance plan. Pure over its inputs (no IO).
+/// Build today's rebalance plan (maintenance mode): every rule, including the
+/// Rule 4 cash deploy. Pure over its inputs (no IO).
 pub fn plan_rebalance(
     state: &PortfolioState,
     cfg: &AppConfig,
     high_water: &HashMap<String, f64>,
     bias: &SignalBias,
     asof: NaiveDate,
+) -> Vec<Action> {
+    plan_inner(state, cfg, high_water, bias, asof, true)
+}
+
+/// The PROTECTIVE rules only - stops, profit-takes, the position and cluster
+/// caps, and the Tier-D lifecycle - with Rule 4's cash deploy suppressed.
+///
+/// This exists so the risk floor can run while the book is still building.
+/// Until 2026-09-19 every one of these rules sat behind `build_complete()`, so
+/// a book that never finished building never ran a stop, a profit-take or a
+/// cluster cap. The unlimited sleeve sat in build mode for 65 consecutive
+/// sessions - a $602/day tranche against a $1,958 LEAPS unit could never fill,
+/// and the unfilled slot pinned `build_complete` false - during which KLAC fell
+/// to -28% with its -25% Floor review never firing and the Tier-D LEAPS reached
+/// -74%/-91% with no time-stop flag. (Rule 2 is a separate matter: the book's
+/// 68.7%-of-NAV AI-infrastructure exposure splits across six clusters of
+/// 7-22% each, so the 30% cluster cap would not have fired even had it run.
+/// Restoring the rule does not fix that; the cluster taxonomy is its own
+/// defect.) The deploy rule stays behind the gate because the build stages own
+/// buying while the book is building; letting both buy would double-deploy.
+pub fn plan_protective(
+    state: &PortfolioState,
+    cfg: &AppConfig,
+    high_water: &HashMap<String, f64>,
+    bias: &SignalBias,
+    asof: NaiveDate,
+) -> Vec<Action> {
+    plan_inner(state, cfg, high_water, bias, asof, false)
+}
+
+fn plan_inner(
+    state: &PortfolioState,
+    cfg: &AppConfig,
+    high_water: &HashMap<String, f64>,
+    bias: &SignalBias,
+    asof: NaiveDate,
+    deploy: bool,
 ) -> Vec<Action> {
     let nav = state.nav.max(1e-9);
     let mut actions: Vec<Action> = Vec::new();
@@ -149,7 +187,14 @@ pub fn plan_rebalance(
     }
 
     // ── Rule 4: deploy cash on visible drawdown (equity only) ───────────────
-    let mut deployable = cash_available_for_buys(cash, nav, cfg.cash_buffer_pct) * bias.deploy_multiplier();
+    // Zero in protective mode: while the book is building the build stages own
+    // all buying, so running both would double-deploy. `band_floor` is always
+    // > 0, so a zero budget skips the whole rule without re-indenting it.
+    let mut deployable = if deploy {
+        cash_available_for_buys(cash, nav, cfg.cash_buffer_pct) * bias.deploy_multiplier()
+    } else {
+        0.0
+    };
     if deployable > band_floor {
         let mut drawdown: HashMap<String, f64> = HashMap::new();
         for h in &state.holdings {
@@ -263,6 +308,79 @@ mod tests {
         let acts = plan_rebalance(&st, &cfg(), &hw, &SignalBias::default(), day());
         let buy = acts.iter().find(|a| a.ticker == "MTZ" && a.kind == ActionKind::Buy).expect("rule-4 buy");
         assert!((buy.dollars - (tgt - held)).abs() < 1.0, "buys the room, got {}", buy.dollars);
+    }
+
+    // ── protective-mode split (2026-09-19 build-deadlock fix) ───────────────
+
+    #[test]
+    fn protective_mode_suppresses_the_rule_4_deploy() {
+        // Exactly the band_scales_with_the_name_not_nav setup, which DOES emit a
+        // Rule 4 buy in maintenance mode — protective mode must emit none, so a
+        // building book never double-deploys against the build stages.
+        let nav = 35_000.0;
+        let tgt = targets::invested_target_weight("MTZ", 0.05) * nav;
+        let held = (tgt - 600.0).max(50.0);
+        let st = state(vec![pos("MTZ", held, 200.0, -0.30)], 2_000.0 + nav * 0.05, nav);
+        let mut hw = HashMap::new();
+        hw.insert("MTZ".to_string(), 300.0);
+        assert!(
+            plan_rebalance(&st, &cfg(), &hw, &SignalBias::default(), day())
+                .iter()
+                .any(|a| a.kind == ActionKind::Buy),
+            "maintenance mode should still deploy"
+        );
+        assert!(
+            !plan_protective(&st, &cfg(), &hw, &SignalBias::default(), day())
+                .iter()
+                .any(|a| a.kind == ActionKind::Buy),
+            "protective mode must never emit a Buy"
+        );
+    }
+
+    #[test]
+    fn protective_mode_still_runs_the_floor_review() {
+        // The KLAC case: a Floor name at -28% while the book is still building.
+        // Before the fix this review lived behind build_complete() and never ran.
+        let st = state(vec![pos("GEV", 500.0, 1000.0, -0.28)], 39_000.0, 40_000.0);
+        let acts = plan_protective(&st, &cfg(), &HashMap::new(), &SignalBias::default(), day());
+        assert!(
+            acts.iter().any(|a| a.ticker == "GEV" && a.kind == ActionKind::ThesisRevalidate),
+            "a -28% Floor name must be flagged while building, got {acts:?}"
+        );
+    }
+
+    #[test]
+    fn protective_mode_still_caps_an_oversized_position() {
+        // GEV at 20% of NAV → the Rule 3 trim must fire during the build too.
+        let st = state(vec![pos("GEV", 8_000.0, 1000.0, 0.1)], 32_000.0, 40_000.0);
+        let acts = plan_protective(&st, &cfg(), &HashMap::new(), &SignalBias::default(), day());
+        let trim = acts
+            .iter()
+            .find(|a| a.ticker == "GEV" && a.kind == ActionKind::Trim)
+            .expect("position cap must apply while building");
+        assert!((trim.dollars - 4_000.0).abs() < 1.0, "got {}", trim.dollars);
+    }
+
+    #[test]
+    fn protective_and_maintenance_agree_once_the_deploy_is_excluded() {
+        // The split must change ONLY the deploy rule: every non-Buy action is
+        // identical in both modes.
+        let st = state(
+            vec![pos("GEV", 8_000.0, 1000.0, -0.40), pos("PLTR", 5_000.0, 665.0, 4.0)],
+            30_000.0,
+            40_000.0,
+        );
+        let hw = HashMap::new();
+        let maint: Vec<_> = plan_rebalance(&st, &cfg(), &hw, &SignalBias::default(), day())
+            .into_iter()
+            .filter(|a| a.kind != ActionKind::Buy)
+            .collect();
+        let prot: Vec<_> = plan_protective(&st, &cfg(), &hw, &SignalBias::default(), day())
+            .into_iter()
+            .filter(|a| a.kind != ActionKind::Buy)
+            .collect();
+        assert_eq!(maint, prot, "the split must not alter any protective rule");
+        assert!(!maint.is_empty(), "test needs at least one protective action");
     }
 
     #[test]
