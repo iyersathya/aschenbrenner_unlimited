@@ -29,6 +29,11 @@ pub struct AppConfig {
     pub position_trim_trigger_pct: f64,
     pub position_trim_target_pct: f64,
     pub cluster_cap_pct: f64,
+    /// Rule 2b: how far a THEME may drift above its own target weight
+    /// before overweight members are trimmed back. Not a flat cap — the
+    /// strategy intends heavy ai-infrastructure concentration; this bounds
+    /// drift beyond that intent. 0.12 = 12 percentage points of NAV.
+    pub theme_drift_band_pct: f64,
     /// Absolute drawdown from cost basis that flags a name for thesis
     /// re-validation. Stored positive (0.35 = -35%).
     pub position_stop_pct: f64,
@@ -91,6 +96,7 @@ impl Default for AppConfig {
             position_trim_trigger_pct: 0.15,
             position_trim_target_pct: 0.10,
             cluster_cap_pct: 0.30,
+            theme_drift_band_pct: 0.12,
             position_stop_pct: 0.35,
             drawdown_deploy_pct: 0.15,
             drawdown_deploy_single_pct: 0.25,
@@ -142,6 +148,7 @@ fn apply(key: &str, value: &str, c: &mut AppConfig) {
         "POSITION_TRIM_TRIGGER_PCT" => pf(&mut c.position_trim_trigger_pct, value),
         "POSITION_TRIM_TARGET_PCT" => pf(&mut c.position_trim_target_pct, value),
         "CLUSTER_CAP_PCT" => pf(&mut c.cluster_cap_pct, value),
+        "THEME_DRIFT_BAND_PCT" => pf(&mut c.theme_drift_band_pct, value),
         "POSITION_STOP_PCT" => pf(&mut c.position_stop_pct, value),
         "DRAWDOWN_DEPLOY_PCT" => pf(&mut c.drawdown_deploy_pct, value),
         "DRAWDOWN_DEPLOY_SINGLE_PCT" => pf(&mut c.drawdown_deploy_single_pct, value),
