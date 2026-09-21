@@ -153,6 +153,50 @@ pub fn cluster_target_weight(cluster: &str, cash_buffer_pct: f64) -> f64 {
     cluster_members(cluster).iter().map(|t| invested_target_weight(t, cash_buffer_pct)).sum()
 }
 
+// ── Theme layer (added 2026-09-20) ──────────────────────────────────────────
+// Rule 2 caps each CLUSTER at 30% of NAV. A 2026-09-20 audit found that test is
+// structurally blind: the book ran 75% of NAV in names levered to one driver —
+// AI datacenter buildout — spread across six clusters of 7-22% each, so not one
+// of them breached 30% and Rule 2 emitted nothing. Grouping clusters by the
+// driver that actually moves them restores the measurement.
+//
+// This is deliberately NOT a flat cap. The v4 strategy TARGETS 66.3% of NAV in
+// ai-infrastructure (80% of the equity sleeve); a flat cap below that would
+// override the strategy rather than guard it. Rule 2b instead caps DRIFT above
+// each theme's own target — see `theme_drift_band_pct`.
+
+/// The economic driver behind a cluster. Clusters are how the book is built;
+/// themes are what it is actually exposed to.
+pub fn theme_of(cluster: &str) -> &'static str {
+    match cluster {
+        "Grid hardware" | "Nuclear baseload" | "AI compute/hosting" | "DC build-out" | "Fab"
+        | "SMR-frontier" | "Grid storage" => "ai-infrastructure",
+        "Defense AGI" => "defense",
+        _ => "other",
+    }
+}
+
+pub fn themes() -> Vec<&'static str> {
+    let mut out: Vec<&'static str> = vec![];
+    for t in equity_invested() {
+        let th = theme_of(t.cluster);
+        if th != "other" && !out.contains(&th) {
+            out.push(th);
+        }
+    }
+    out
+}
+
+pub fn theme_members(theme: &str) -> Vec<&'static str> {
+    equity_invested().filter(|t| theme_of(t.cluster) == theme).map(|t| t.ticker).collect()
+}
+
+/// The strategy's OWN target weight for a theme — the baseline Rule 2b measures
+/// drift against, so the guard never fights the book's intended construction.
+pub fn theme_target_weight(theme: &str, cash_buffer_pct: f64) -> f64 {
+    theme_members(theme).iter().map(|t| invested_target_weight(t, cash_buffer_pct)).sum()
+}
+
 /// The tradable broker symbol for a target: stock ticker, resolved OCC for a
 /// LEAPS, or the config-pinned ticker for a micro-cap. `None` when a micro-cap
 /// slot is unset or a LEAPS expiry can't be computed.

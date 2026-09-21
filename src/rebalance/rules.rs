@@ -176,6 +176,47 @@ fn plan_inner(
         }
     }
 
+    // ── Rule 2b: theme drift cap (added 2026-09-20) ─────────────────────────
+    // Rule 2's 30%-per-cluster test cannot see a book concentrated in ONE driver
+    // across several sub-30% clusters. On 2026-09-20 this sleeve ran 75.0% of NAV
+    // in ai-infrastructure across six clusters of 7-22% — Rule 2 emitted nothing.
+    // The band is measured against the theme's OWN target (66.3% for
+    // ai-infrastructure), so this bounds drift without overriding a strategy that
+    // deliberately concentrates. Trims only names already above their individual
+    // target, exactly as Rule 2 does.
+    for th in targets::themes() {
+        let members = targets::theme_members(th);
+        if members.is_empty() {
+            continue;
+        }
+        let tw: f64 = members.iter().map(|m| mv[*m]).sum::<f64>() / nav;
+        let tgt = targets::theme_target_weight(th, cfg.cash_buffer_pct);
+        let limit = tgt + cfg.theme_drift_band_pct;
+        if tw <= limit {
+            continue;
+        }
+        let mut excess = (tw - limit) * nav;
+        let mut cand: Vec<(&str, f64)> =
+            members.iter().map(|m| (*m, mv[*m] - target_d(m))).filter(|(_, room)| *room > 0.0).collect();
+        cand.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal).then(
+                bias.trim_priority(a.0).partial_cmp(&bias.trim_priority(b.0)).unwrap_or(std::cmp::Ordering::Equal),
+            )
+        });
+        for (m, room) in cand {
+            if excess <= 0.0 {
+                break;
+            }
+            let take = room.min(excess);
+            if take > 0.0 {
+                add_trim(m, take, format!("theme '{}' {:.1}% > target {:.1}% + {:.0}pp drift band → trim", th, tw * 100.0, tgt * 100.0, cfg.theme_drift_band_pct * 100.0), &mut trims, &mut trim_reasons);
+                *mv.get_mut(m).unwrap() -= take;
+                cash += take;
+                excess -= take;
+            }
+        }
+    }
+
     // Emit accumulated equity trims (band-gated on the combined size).
     let mut trim_tickers: Vec<&String> = trims.keys().collect();
     trim_tickers.sort();
@@ -381,6 +422,87 @@ mod tests {
             .collect();
         assert_eq!(maint, prot, "the split must not alter any protective rule");
         assert!(!maint.is_empty(), "test needs at least one protective action");
+    }
+
+    // ── theme drift cap (Rule 2b, 2026-09-20) ───────────────────────────────
+
+    #[test]
+    fn theme_layer_maps_every_equity_cluster() {
+        // Every cluster must resolve to a real theme; an unmapped cluster would
+        // silently fall into "other" and escape Rule 2b — the exact failure mode
+        // this layer exists to fix.
+        for t in targets::equity_invested() {
+            assert_ne!(
+                targets::theme_of(t.cluster),
+                "other",
+                "cluster '{}' ({}) is not mapped to a theme",
+                t.cluster,
+                t.ticker
+            );
+        }
+    }
+
+    #[test]
+    fn ai_infrastructure_theme_target_matches_the_strategy() {
+        // The v4 strategy deliberately targets ~66% of NAV in ai-infrastructure.
+        // Rule 2b measures drift against THIS number, so if the target model ever
+        // changes, the guard follows it instead of fighting it.
+        let w = targets::theme_target_weight("ai-infrastructure", 0.05);
+        assert!((0.60..0.72).contains(&w), "ai-infrastructure target weight {w}");
+        let d = targets::theme_target_weight("defense", 0.05);
+        assert!((0.12..0.21).contains(&d), "defense target weight {d}");
+    }
+
+    #[test]
+    fn theme_cap_does_not_fire_at_the_strategys_own_concentration() {
+        // THE SAFETY TEST. A book sitting exactly at its target weights is fully
+        // concentrated by design; Rule 2b must emit nothing. If this fails, the
+        // guard is overriding the strategy rather than bounding its drift.
+        let nav = 40_000.0;
+        let cfg = cfg();
+        let mut ps = vec![];
+        for t in targets::equity_invested() {
+            let w = targets::invested_target_weight(t.ticker, cfg.cash_buffer_pct);
+            ps.push(pos(t.ticker, w * nav, 100.0, 0.0));
+        }
+        let st = state(ps, nav * cfg.cash_buffer_pct, nav);
+        let acts = plan_rebalance(&st, &cfg, &HashMap::new(), &SignalBias::default(), day());
+        assert!(
+            !acts.iter().any(|a| a.kind == ActionKind::Trim && a.reason.contains("theme")),
+            "Rule 2b must not trim a book at its own targets, got {acts:?}"
+        );
+    }
+
+    #[test]
+    fn theme_cap_fires_once_drift_exceeds_the_band() {
+        // Scale every ai-infrastructure name up 25% and leave defense at target:
+        // the theme drifts well past target + 12pp and Rule 2b must trim.
+        let nav = 40_000.0;
+        let cfg = cfg();
+        let mut ps = vec![];
+        let mut total = 0.0;
+        for t in targets::equity_invested() {
+            let w = targets::invested_target_weight(t.ticker, cfg.cash_buffer_pct);
+            let mult = if targets::theme_of(t.cluster) == "ai-infrastructure" { 1.25 } else { 1.0 };
+            let v = w * nav * mult;
+            total += v;
+            ps.push(pos(t.ticker, v, 100.0, 0.0));
+        }
+        // NAV must be what the book is actually worth, or the theme weight is
+        // measured against a denominator the positions do not sum to.
+        let st = state(ps, 0.0, total);
+        let acts = plan_rebalance(&st, &cfg, &HashMap::new(), &SignalBias::default(), day());
+        let themed: Vec<_> =
+            acts.iter().filter(|a| a.kind == ActionKind::Trim && a.reason.contains("theme")).collect();
+        assert!(!themed.is_empty(), "Rule 2b should have trimmed, got {acts:?}");
+        for a in &themed {
+            assert_eq!(
+                targets::theme_of(targets::find(&a.ticker).unwrap().cluster),
+                "ai-infrastructure",
+                "Rule 2b trimmed a name outside the breaching theme: {}",
+                a.ticker
+            );
+        }
     }
 
     #[test]
