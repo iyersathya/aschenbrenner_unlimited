@@ -228,30 +228,63 @@ fn plan_inner(
     }
 
     // ── Rule 4: deploy cash on visible drawdown (equity only) ───────────────
+    // Per-name drawdown from high-water marks (Floor + Asymmetric only; the
+    // Tier-D lifecycle is Rule 5). Computed before the deploy gate so the
+    // evaluation trace below runs in protective mode too — the sibling
+    // sleeve has traced every triggered name since 2026-09-17, this one
+    // emitted nothing (0 lines 9/21–9/23) because the block was skipped
+    // whenever `deploy` was false.
+    let mut drawdown: HashMap<String, f64> = HashMap::new();
+    for h in &state.holdings {
+        if targets::find(&h.ticker).map(|t| matches!(t.tier, Tier::Floor | Tier::Asymmetric)).unwrap_or(false) {
+            let hw = high_water.get(&h.ticker).copied().unwrap_or(h.price);
+            if hw > 0.0 && h.price > 0.0 {
+                drawdown.insert(h.ticker.clone(), ((hw - h.price) / hw).max(0.0));
+            }
+        }
+    }
+    let mut stressed: HashSet<&str> = HashSet::new();
+    for c in targets::clusters() {
+        if targets::cluster_members(c).iter().any(|m| drawdown.get(*m).copied().unwrap_or(0.0) >= cfg.drawdown_deploy_pct) {
+            stressed.insert(c);
+        }
+    }
+    let deployable_at_eval = cash_available_for_buys(cash, nav, cfg.cash_buffer_pct) * bias.deploy_multiplier();
+    // Evaluation trace: a name past the drawdown trigger that gets no buy must
+    // be distinguishable in the journal from "nothing triggered today".
+    for t in targets::equity_invested() {
+        let name_dd = drawdown.get(t.ticker).copied().unwrap_or(0.0);
+        let cluster_hit = stressed.contains(t.cluster);
+        if name_dd < cfg.drawdown_deploy_single_pct && !cluster_hit {
+            continue;
+        }
+        let room = target_d(t.ticker) - mv[t.ticker];
+        let band = band_of(t.ticker);
+        let verdict = if !deploy {
+            "skipped: protective mode — the build stages own buying"
+        } else if deployable_at_eval <= band_floor {
+            "blocked: deployable ≤ band"
+        } else if room > band {
+            "eligible"
+        } else {
+            "blocked: room ≤ band"
+        };
+        tracing::info!(
+            "rule4: {} dd {:.1}% from high-water (trigger: {}) room ${:.0} vs band ${:.0}, deployable ${:.0} — {}",
+            t.ticker,
+            name_dd * 100.0,
+            if cluster_hit && name_dd < cfg.drawdown_deploy_single_pct { "cluster stressed" } else { "single-name" },
+            room,
+            band,
+            deployable_at_eval,
+            verdict
+        );
+    }
     // Zero in protective mode: while the book is building the build stages own
     // all buying, so running both would double-deploy. `band_floor` is always
     // > 0, so a zero budget skips the whole rule without re-indenting it.
-    let mut deployable = if deploy {
-        cash_available_for_buys(cash, nav, cfg.cash_buffer_pct) * bias.deploy_multiplier()
-    } else {
-        0.0
-    };
+    let mut deployable = if deploy { deployable_at_eval } else { 0.0 };
     if deployable > band_floor {
-        let mut drawdown: HashMap<String, f64> = HashMap::new();
-        for h in &state.holdings {
-            if targets::find(&h.ticker).map(|t| matches!(t.tier, Tier::Floor | Tier::Asymmetric)).unwrap_or(false) {
-                let hw = high_water.get(&h.ticker).copied().unwrap_or(h.price);
-                if hw > 0.0 && h.price > 0.0 {
-                    drawdown.insert(h.ticker.clone(), ((hw - h.price) / hw).max(0.0));
-                }
-            }
-        }
-        let mut stressed: HashSet<&str> = HashSet::new();
-        for c in targets::clusters() {
-            if targets::cluster_members(c).iter().any(|m| drawdown.get(*m).copied().unwrap_or(0.0) >= cfg.drawdown_deploy_pct) {
-                stressed.insert(c);
-            }
-        }
         let mut eligible: Vec<&'static targets::Target> = targets::equity_invested()
             .filter(|t| {
                 let room = target_d(t.ticker) - mv[t.ticker];
