@@ -170,3 +170,7 @@ All env keys parsed by `core/config.rs`. Important ones not obvious from code:
 - **Ticker universe.** All equity names + LEAPS underlyings (NVDA/CRWV/IREN/OKLO)
   + the pinned micro-caps must be in `../trading-agents-scheduler/tickers.txt`.
 - **Infra patterns** mirror the sibling sleeves by hand — port fixes both ways.
+
+## 2026-09-26 — unbuyable names fund last; sector tilt
+
+`daily.rs` records every `> slot cap` refusal from `execute_actions` into vault `meta/unbuyable.json`; `plan_build` sorts those names LAST within each stage, so the day's residual reaches a buyable LEAPS (CRWV/OKLO) instead of NVDA/IREN every session. `build_complete` is still structurally false while a LEAPS unit exceeds its slot — the slot sizing is the operator's decision (backlog 156/250). `SignalBias.sector_tilt` (the SPDR group's 20-day excess over SPY, ±10 pts saturating) enters `buy_priority` at the fundamentals-tilt weight.
