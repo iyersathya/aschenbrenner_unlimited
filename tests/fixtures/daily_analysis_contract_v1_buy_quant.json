@@ -62,7 +62,7 @@
       "revenue_yoy_pct": 5.97,
       "shares_outstanding": 14590000000,
       "source": "sec-xbrl",
-      "ttm_window": "\u21922026Q1"
+      "ttm_window": "→2026Q1"
     },
     "iv": 28.4,
     "iv_rank": 42.0,
@@ -73,7 +73,33 @@
     "price": 196.5,
     "range_position_52w": 0.74,
     "realized_vol_20d": 22.5,
-    "source": "alpaca+fmp"
+    "source": "alpaca+fmp",
+    "dilution": {
+      "severity": "moderate",
+      "active_takedown": null,
+      "recent_takedown": {
+        "form": "424B5",
+        "filed": "2026-08-20",
+        "age_days": 19
+      },
+      "shelf": {
+        "form": "S-3",
+        "filed": "2026-07-02",
+        "age_days": 68
+      },
+      "share_growth_pct_yr": 9.4,
+      "quality": "verified",
+      "source": "sec_edgar"
+    },
+    "insider": {
+      "form4_count_7d": 1,
+      "form4_count_30d": 6,
+      "latest_form4": "2026-09-05",
+      "direction": "unresolved",
+      "direction_note": "counts only; code F is not a sale and is not separated here — see daily-insider-scan for parsed direction on the watchlist",
+      "quality": "verified",
+      "source": "sec_edgar"
+    }
   },
   "reports": {
     "bear_case": "Extended above the 20DMA; pullback risk.",
