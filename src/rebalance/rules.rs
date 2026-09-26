@@ -10,7 +10,7 @@ use crate::core::safety::cash_available_for_buys;
 use crate::portfolio::state::PortfolioState;
 use crate::portfolio::targets::{self, Tier};
 use crate::rebalance::signal_bias::SignalBias;
-use crate::rebalance::Action;
+use crate::rebalance::{Action, ActionKind};
 use chrono::NaiveDate;
 use std::collections::{HashMap, HashSet};
 
@@ -134,6 +134,31 @@ fn plan_inner(
                 }
             }
             _ => {}
+        }
+    }
+
+    // ── Rule 1b: contract flags on HELD names (added 2026-09-26) ────────────
+    // Until now the producer only touched what the book was about to BUY. A
+    // held name the contract grades `severe` on dilution, or a strong-bearish
+    // consensus, is surfaced for a thesis re-validation even when it is not
+    // down 35% — the floor review reads the list. Advisory only: no order, no
+    // trim. Skipped when Rule 1 already put the name on the list this session.
+    for h in &state.holdings {
+        if actions.iter().any(|a| a.kind == ActionKind::ThesisRevalidate && a.ticker == h.ticker) {
+            continue;
+        }
+        let mut why: Vec<String> = Vec::new();
+        if let Some(v) = bias.buy_vetoed(&h.ticker) {
+            why.push(format!("contract: {v}"));
+        }
+        if bias.strong_bearish.contains(&h.ticker) {
+            why.push("daily-analysis: strong-bearish consensus".to_string());
+        }
+        if !why.is_empty() {
+            actions.push(Action::revalidate(
+                &h.ticker,
+                format!("{} — re-validate thesis (held, {:+.0}% from cost)", why.join("; "), h.unrealized_plpc * 100.0),
+            ));
         }
     }
 
@@ -344,7 +369,6 @@ fn plan_inner(
 mod tests {
     use super::*;
     use crate::core::alpaca::{AlpacaAccount, Position};
-    use crate::rebalance::ActionKind;
 
     fn cfg() -> AppConfig {
         AppConfig::default()
@@ -575,5 +599,23 @@ mod tests {
         let st = state(vec![pos(&occ, 4_000.0, 200.0, 6.0)], 36_000.0, 40_000.0);
         let acts = plan_rebalance(&st, &cfg(), &HashMap::new(), &SignalBias::default(), day());
         assert!(acts.iter().any(|a| a.ticker == "NVDA_LEAPS" && a.kind == ActionKind::Trim && (a.dollars - 2_000.0).abs() < 1.0));
+    }
+
+    #[test]
+    fn contract_flags_on_a_held_name_surface_a_revalidate_without_a_drawdown() {
+        let nav = 36_000.0;
+        let st = state(vec![pos("MTZ", 1_000.0, 200.0, 0.10), pos("GEV", 1_000.0, 500.0, 0.05)], nav * 0.30, nav);
+        let mut bias = SignalBias { enabled: true, ..Default::default() };
+        bias.buy_veto.insert("MTZ".into(), "dilution severe: active 424B takedown".into());
+        bias.strong_bearish.insert("GEV".into());
+        let acts = plan_protective(&st, &cfg(), &HashMap::new(), &bias, NaiveDate::from_ymd_opt(2026, 9, 26).unwrap());
+        let rv: Vec<&Action> = acts.iter().filter(|a| a.kind == ActionKind::ThesisRevalidate).collect();
+        assert!(rv.iter().any(|a| a.ticker == "MTZ" && a.reason.contains("contract:")), "{acts:?}");
+        assert!(rv.iter().any(|a| a.ticker == "GEV" && a.reason.contains("strong-bearish")), "{acts:?}");
+        // Advisory only: no buy or trim was created for either name.
+        assert!(!acts.iter().any(|a| a.kind != ActionKind::ThesisRevalidate && (a.ticker == "MTZ" || a.ticker == "GEV")));
+        // A disabled bias flags nothing.
+        let off = SignalBias { enabled: false, buy_veto: bias.buy_veto.clone(), ..Default::default() };
+        assert!(!plan_protective(&st, &cfg(), &HashMap::new(), &off, NaiveDate::from_ymd_opt(2026, 9, 26).unwrap()).iter().any(|a| a.kind == ActionKind::ThesisRevalidate));
     }
 }
