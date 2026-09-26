@@ -21,6 +21,14 @@
         "strong_sell": 0,
         "total": 111
       },
+      "ratings_delta": {
+        "buy": 2,
+        "hold": -1,
+        "net_upgrades": 2,
+        "sell": 0,
+        "total": 1,
+        "vs_date": "2026-06-05"
+      },
       "target_band": {
         "high": 400.0,
         "low": 245.0,
@@ -44,6 +52,46 @@
         "form": "S-3"
       },
       "source": "sec_edgar"
+    },
+    "earnings_behavior": {
+      "avg_abs_move_pct": 3.25,
+      "basis": "8-K item 2.02 filing date; reaction = larger of same-day and next-day close-to-close move",
+      "last_date": "2026-05-01",
+      "last_move_pct": -3.8,
+      "max_abs_move_pct": 4.6,
+      "n": 4,
+      "prints": [
+        {
+          "basis": "same_day",
+          "date": "2026-05-01",
+          "move_pct": -3.8,
+          "next_day_pct": 0.4,
+          "same_day_pct": -3.8
+        },
+        {
+          "basis": "same_day",
+          "date": "2026-01-30",
+          "move_pct": 2.1,
+          "next_day_pct": -0.6,
+          "same_day_pct": 2.1
+        },
+        {
+          "basis": "next_day",
+          "date": "2025-10-31",
+          "move_pct": -2.5,
+          "next_day_pct": -2.5,
+          "same_day_pct": 0.3
+        },
+        {
+          "basis": "same_day",
+          "date": "2025-08-01",
+          "move_pct": 4.6,
+          "next_day_pct": 1.1,
+          "same_day_pct": 4.6
+        }
+      ],
+      "quality": "verified",
+      "source": "sec_edgar+alpaca"
     },
     "expected_move_30d_pct": 8.14,
     "field_quality": {
@@ -99,6 +147,17 @@
     "price": 196.5,
     "range_position_52w": 0.74,
     "realized_vol_20d": 22.5,
+    "sector": {
+      "description": "Electronic Computers",
+      "etf": "XLK",
+      "group": "technology",
+      "n_sectors": 11,
+      "rank_20d": 2,
+      "rs_20d_pct": 2.1,
+      "rs_5d_pct": 0.8,
+      "sic": 3571,
+      "source": "sec_edgar_sic"
+    },
     "short": {
       "daily_short_volume": {
         "date": "2026-06-05",
