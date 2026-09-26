@@ -98,7 +98,20 @@ pub fn plan_build(
     asof: NaiveDate,
     start: NaiveDate,
     bias: &SignalBias,
+    unbuyable: &std::collections::HashSet<String>,
 ) -> Vec<Action> {
+    // Unbuyable names last (2026-09-26): a LEAPS whose ONE contract exceeds its
+    // slot cap (NVDA $300C, IREN $30C) was sorted first by shortfall, took the
+    // whole residual as `take = want.min(deployable)`, and execute() then
+    // refused it -- 16 of 19 sessions with zero orders while CRWV/OKLO LEAPS
+    // would have fit. daily.rs records every "> slot cap" skip into vault
+    // meta/unbuyable.json; those names now fund LAST, so the residual flows to
+    // a name that can actually be bought. The slot sizing itself is still the
+    // operator's decision (backlog 156/250) -- this only stops it wasting the
+    // day's budget.
+    for t in unbuyable {
+        tracing::info!("build: {} unbuyable at its slot cap last session — funds last", t);
+    }
     // Contract veto (2026-09-26): a name the producer grades `severe` on
     // dilution is not accumulated this session. Log it once so the journal
     // says why a shortfall went unfunded.
@@ -143,7 +156,11 @@ pub fn plan_build(
             .map(|t| (t, (target_d(t.ticker) - current_mv(t, state, cfg)).max(0.0)))
             .filter(|(t, short)| *short > 1.0 && *short > band_d(t.ticker))
             .collect();
-        names.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        names.sort_by(|a, b| {
+            let ua = unbuyable.contains(a.0.ticker);
+            let ub = unbuyable.contains(b.0.ticker);
+            ua.cmp(&ub).then(b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal))
+        });
         if names.is_empty() {
             continue;
         }
@@ -194,7 +211,7 @@ mod tests {
     fn day_one_builds_only_floor() {
         let st = empty_state(40_000.0);
         let start = NaiveDate::from_ymd_opt(2026, 6, 22).unwrap();
-        let acts = plan_build(&st, &AppConfig::default(), start, start, &SignalBias::default());
+        let acts = plan_build(&st, &AppConfig::default(), start, start, &SignalBias::default(), &Default::default());
         assert!(!acts.is_empty());
         for a in &acts {
             assert_eq!(targets::find(&a.ticker).unwrap().tier, Tier::Floor, "{} not Floor", a.ticker);
@@ -207,11 +224,11 @@ mod tests {
         let start = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
         // 8 weekdays in → Floor+Asymmetric, but NOT LEAPS yet.
         let asof = NaiveDate::from_ymd_opt(2026, 6, 10).unwrap();
-        let acts = plan_build(&st, &AppConfig::default(), asof, start, &SignalBias::default());
+        let acts = plan_build(&st, &AppConfig::default(), asof, start, &SignalBias::default(), &Default::default());
         assert!(!acts.iter().any(|a| targets::is_leaps(targets::find(&a.ticker).unwrap())));
         // 16 weekdays in → LEAPS now eligible.
         let asof2 = NaiveDate::from_ymd_opt(2026, 6, 22).unwrap();
-        let acts2 = plan_build(&st, &AppConfig::default(), asof2, start, &SignalBias::default());
+        let acts2 = plan_build(&st, &AppConfig::default(), asof2, start, &SignalBias::default(), &Default::default());
         assert!(acts2.iter().any(|a| targets::is_leaps(targets::find(&a.ticker).unwrap())));
     }
 
@@ -226,7 +243,7 @@ mod tests {
         let start = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
         let asof = NaiveDate::from_ymd_opt(2026, 6, 10).unwrap(); // Asym active
         let cfg = AppConfig::default();
-        let acts = plan_build(&st, &cfg, asof, start, &SignalBias::default());
+        let acts = plan_build(&st, &cfg, asof, start, &SignalBias::default(), &Default::default());
         let asym: Vec<_> = acts
             .iter()
             .filter(|a| targets::find(&a.ticker).map(|t| t.tier == Tier::Asymmetric).unwrap_or(false))
@@ -274,7 +291,7 @@ mod tests {
         let invested: f64 = positions.iter().map(|p| p.market_value).sum();
         let a = AlpacaAccount { cash: nav - invested, portfolio_value: nav, equity: nav, ..Default::default() };
         let st = PortfolioState::from_alpaca(&a, &positions);
-        let acts = plan_build(&st, &cfg, asof, start, &SignalBias::default());
+        let acts = plan_build(&st, &cfg, asof, start, &SignalBias::default(), &Default::default());
         assert!(
             !acts.iter().any(|a| targets::find(&a.ticker).map(|t| t.tier == Tier::Floor).unwrap_or(false)),
             "shortfalls inside a name's own band must not be planned: {acts:?}"
@@ -337,7 +354,7 @@ mod tests {
         let start = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
         let asof = NaiveDate::from_ymd_opt(2026, 8, 1).unwrap();
         let cfg = AppConfig::default();
-        let acts = plan_build(&st, &cfg, asof, start, &SignalBias::default());
+        let acts = plan_build(&st, &cfg, asof, start, &SignalBias::default(), &Default::default());
         let total: f64 = acts.iter().map(|a| a.dollars).sum();
         assert!(total <= 40_000.0 * (1.0 - cfg.cash_buffer_pct) + 1.0, "deployed {total}");
     }
@@ -348,18 +365,30 @@ mod tests {
         // accumulated this session — the build simply funds the others.
         let st = empty_state(40_000.0);
         let start = NaiveDate::from_ymd_opt(2026, 6, 22).unwrap();
-        let victim = plan_build(&st, &AppConfig::default(), start, start, &SignalBias::default())
+        let victim = plan_build(&st, &AppConfig::default(), start, start, &SignalBias::default(), &Default::default())
             .first()
             .map(|a| a.ticker.clone())
             .expect("day one builds something");
         let mut bias = SignalBias { enabled: true, ..Default::default() };
         bias.buy_veto.insert(victim.clone(), "dilution severe: test".into());
-        let acts = plan_build(&st, &AppConfig::default(), start, start, &bias);
+        let acts = plan_build(&st, &AppConfig::default(), start, start, &bias, &Default::default());
         assert!(!acts.is_empty(), "the veto removes one name, not the build");
         assert!(acts.iter().all(|a| a.ticker != victim), "{victim} must not be bought under a contract veto");
         // A disabled bias carries no veto.
         bias.enabled = false;
-        let acts = plan_build(&st, &AppConfig::default(), start, start, &bias);
+        let acts = plan_build(&st, &AppConfig::default(), start, start, &bias, &Default::default());
         assert!(acts.iter().any(|a| a.ticker == victim));
+    }
+
+    #[test]
+    fn unbuyable_names_fund_last() {
+        let st = empty_state(40_000.0);
+        let start = NaiveDate::from_ymd_opt(2026, 6, 22).unwrap();
+        let first = plan_build(&st, &AppConfig::default(), start, start, &SignalBias::default(), &Default::default())
+            .first().map(|a| a.ticker.clone()).expect("day one builds");
+        let mut unb = std::collections::HashSet::new();
+        unb.insert(first.clone());
+        let acts = plan_build(&st, &AppConfig::default(), start, start, &SignalBias::default(), &unb);
+        assert!(acts.first().map(|a| a.ticker != first).unwrap_or(true), "the unbuyable name must not take the first slice");
     }
 }

@@ -122,8 +122,17 @@ pub async fn run(mode: RunMode, armed: bool) -> String {
                     .map(|a| a.ticker.clone())
                     .collect();
                 let mut acts = protective;
+                // Names execute() refused last session because one unit exceeds
+                // the slot cap -- they fund last so the residual reaches a
+                // buyable name (2026-09-26).
+                let unbuyable: std::collections::HashSet<String> = vault
+                    .read_json("meta", "unbuyable.json")
+                    .get("tickers")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                    .unwrap_or_default();
                 acts.extend(
-                    build::plan_build(&state, cfg, today, start, &bias)
+                    build::plan_build(&state, cfg, today, start, &bias, &unbuyable)
                         .into_iter()
                         .filter(|a| !guarded.contains(&a.ticker)),
                 );
@@ -135,6 +144,14 @@ pub async fn run(mode: RunMode, armed: bool) -> String {
 
     let results = execute_actions(&actions, cfg, alpaca.as_ref(), data.as_ref(), armed, &state).await;
     persist_cards(&vault, today, mode_label, armed, &actions, &results);
+    // Record which names were refused for "> slot cap" so tomorrow's build
+    // funds them last (see build::plan_build). Rewritten every session.
+    let unbuyable: Vec<String> = results
+        .iter()
+        .filter(|r| r.reason.contains("> slot cap"))
+        .map(|r| r.ticker.clone())
+        .collect();
+    let _ = vault.write_json("meta", "unbuyable.json", &serde_json::json!({ "date": today.to_string(), "tickers": unbuyable }));
 
     let digest = build_digest(cfg, today, mode_label, armed, &state, &high_water, &bias, &results);
     delivery::notify_text(&digest).await;

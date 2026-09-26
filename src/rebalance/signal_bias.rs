@@ -39,6 +39,10 @@ pub struct SignalBias {
     /// dilution +0.5, crowded short interest +1.0, elevated +0.5. Funds the
     /// name later among peers; never removes it.
     pub buy_penalty: HashMap<String, f64>,
+    /// Sector relative-strength tilt in [-1, 1] (2026-09-26): the name's SPDR
+    /// group's 20-session excess return over SPY, ±10 pts saturating. Ordering
+    /// only, same weight as the fundamentals tilt.
+    pub sector_tilt: HashMap<String, f64>,
 }
 
 /// The playbook read, reduced to one signed tilt:
@@ -87,6 +91,9 @@ impl SignalBias {
             // Contract dilution / short reads (2026-09-26). Absent = unknown =
             // no effect; a `clear` read is also no effect. Only a stated
             // problem moves a name, and only downward in the buy order.
+            if let Some(rs) = a.quant.as_ref().and_then(|q| q.sector_rs_20d_pct) {
+                b.sector_tilt.insert(t.ticker.to_string(), (rs / 10.0).clamp(-1.0, 1.0));
+            }
             if let Some(q) = a.quant.as_ref() {
                 if let Some(d) = q.dilution.as_ref() {
                     match d.severity.as_str() {
@@ -144,6 +151,13 @@ impl SignalBias {
         self.buy_veto.get(ticker).map(String::as_str)
     }
 
+    pub fn sector_tilt_of(&self, ticker: &str) -> f64 {
+        if !self.enabled {
+            return 0.0;
+        }
+        self.sector_tilt.get(ticker).copied().unwrap_or(0.0)
+    }
+
     pub fn buy_penalty_of(&self, ticker: &str) -> f64 {
         if !self.enabled {
             return 0.0;
@@ -165,7 +179,7 @@ impl SignalBias {
     /// with healthy margins funds ahead at equal conviction). Higher key =
     /// funded earlier.
     pub fn buy_priority(&self, ticker: &str) -> f64 {
-        self.conviction_of(ticker) + FUND_TILT_WEIGHT * (self.fund_tilt_of(ticker) - self.buy_penalty_of(ticker))
+        self.conviction_of(ticker) + FUND_TILT_WEIGHT * (self.fund_tilt_of(ticker) + self.sector_tilt_of(ticker) - self.buy_penalty_of(ticker))
     }
 
     /// Macro-regime multiplier on the deployable cash (PDF: cash is optionality,
@@ -269,5 +283,17 @@ mod tests {
         off.buy_veto.insert("X".into(), "y".into());
         assert_eq!(off.buy_vetoed("X"), None);
         assert_eq!(off.buy_penalty_of("X"), 0.0);
+    }
+
+    #[test]
+    fn sector_tilt_reorders_peers_and_stays_secondary() {
+        let mut b = bias(&[("HOT", 0.3), ("COLD", 0.3)], None);
+        b.sector_tilt.insert("HOT".into(), 0.8);
+        b.sector_tilt.insert("COLD".into(), -0.8);
+        assert!(b.buy_priority("HOT") > b.buy_priority("COLD"));
+        let mut b2 = bias(&[("LOVED", 0.9), ("HATED", -0.9)], None);
+        b2.sector_tilt.insert("LOVED".into(), -1.0);
+        b2.sector_tilt.insert("HATED".into(), 1.0);
+        assert!(b2.buy_priority("LOVED") > b2.buy_priority("HATED"));
     }
 }

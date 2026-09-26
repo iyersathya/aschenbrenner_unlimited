@@ -129,6 +129,10 @@ pub struct Quant {
     /// check — unknown, never clean (see the struct docs).
     pub dilution: Option<Dilution>,
     pub short: Option<ShortData>,
+    /// `quant.sector.rs_20d_pct` (2026-09-26): the name's SPDR group's
+    /// 20-session return in excess of SPY. None = no sector block.
+    pub sector_rs_20d_pct: Option<f64>,
+    pub sector_group: Option<String>,
 }
 
 /// The subset of `quant.fundamentals` the long-horizon overlay uses. All TTM;
@@ -277,6 +281,8 @@ fn parse_quant(j: &Value) -> Option<Quant> {
         macro_score: q.get("macro_score").and_then(|v| v.as_i64()),
         dilution: parse_dilution(q),
         short: parse_short(q),
+        sector_rs_20d_pct: q.get("sector").and_then(|v| v.get("rs_20d_pct")).and_then(|v| v.as_f64()),
+        sector_group: q.get("sector").and_then(|v| v.get("group")).and_then(|v| v.as_str()).map(String::from),
     })
 }
 
