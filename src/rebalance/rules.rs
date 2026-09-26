@@ -289,9 +289,14 @@ fn plan_inner(
             .filter(|t| {
                 let room = target_d(t.ticker) - mv[t.ticker];
                 let name_dd = drawdown.get(t.ticker).copied().unwrap_or(0.0);
-                room > band_of(t.ticker) && (name_dd >= cfg.drawdown_deploy_single_pct || stressed.contains(t.cluster))
+                bias.buy_vetoed(t.ticker).is_none()
+                    && room > band_of(t.ticker)
+                    && (name_dd >= cfg.drawdown_deploy_single_pct || stressed.contains(t.cluster))
             })
             .collect();
+        for (t, why) in &bias.buy_veto {
+            tracing::info!("rule4: {} buy VETOED this session by the contract — {}", t, why);
+        }
         eligible.sort_by(|a, b| {
             bias.buy_priority(b.ticker).partial_cmp(&bias.buy_priority(a.ticker)).unwrap_or(std::cmp::Ordering::Equal)
                 .then((target_d(b.ticker) - mv[b.ticker]).partial_cmp(&(target_d(a.ticker) - mv[a.ticker])).unwrap_or(std::cmp::Ordering::Equal))

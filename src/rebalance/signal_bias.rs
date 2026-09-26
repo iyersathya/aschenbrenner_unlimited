@@ -29,6 +29,16 @@ pub struct SignalBias {
     /// cheap-vs-own-history + margin trends + CapEx-cycle health). 0 when the
     /// record carries no fundamentals (ETFs, thin filers).
     pub fund_tilt: HashMap<String, f64>,
+    /// Names the contract says NOT to fund this session (2026-09-26):
+    /// `quant.dilution.severity == severe` — an active takedown or a share
+    /// count growing ≥15%/yr. ticker → reason. A veto removes the name from
+    /// the buy candidates; it never trims, never sells, never touches a name
+    /// the rules are not already about to buy.
+    pub buy_veto: HashMap<String, String>,
+    /// Buy-order PENALTY (same scale as the fundamentals tilt): moderate
+    /// dilution +0.5, crowded short interest +1.0, elevated +0.5. Funds the
+    /// name later among peers; never removes it.
+    pub buy_penalty: HashMap<String, f64>,
 }
 
 /// The playbook read, reduced to one signed tilt:
@@ -74,6 +84,33 @@ impl SignalBias {
             if let Some(f) = a.quant.as_ref().and_then(|q| q.fundamentals.as_ref()) {
                 b.fund_tilt.insert(t.ticker.to_string(), fundamentals_tilt(f));
             }
+            // Contract dilution / short reads (2026-09-26). Absent = unknown =
+            // no effect; a `clear` read is also no effect. Only a stated
+            // problem moves a name, and only downward in the buy order.
+            if let Some(q) = a.quant.as_ref() {
+                if let Some(d) = q.dilution.as_ref() {
+                    match d.severity.as_str() {
+                        "severe" => {
+                            b.buy_veto.insert(t.ticker.to_string(), format!("dilution severe: {}", d.detail()));
+                        }
+                        "moderate" => {
+                            *b.buy_penalty.entry(t.ticker.to_string()).or_insert(0.0) += 0.5;
+                        }
+                        _ => {}
+                    }
+                }
+                if let Some(s) = q.short.as_ref() {
+                    match s.si_read.as_deref() {
+                        Some("crowded") => {
+                            *b.buy_penalty.entry(t.ticker.to_string()).or_insert(0.0) += 1.0;
+                        }
+                        Some("elevated") => {
+                            *b.buy_penalty.entry(t.ticker.to_string()).or_insert(0.0) += 0.5;
+                        }
+                        _ => {}
+                    }
+                }
+            }
             if a.is_strong_bearish() {
                 b.strong_bearish.insert(t.ticker.to_string());
             }
@@ -99,6 +136,21 @@ impl SignalBias {
         self.fund_tilt.get(ticker).copied().unwrap_or(0.0)
     }
 
+    /// Why the contract says not to fund `ticker` this session, if it does.
+    pub fn buy_vetoed(&self, ticker: &str) -> Option<&str> {
+        if !self.enabled {
+            return None;
+        }
+        self.buy_veto.get(ticker).map(String::as_str)
+    }
+
+    pub fn buy_penalty_of(&self, ticker: &str) -> f64 {
+        if !self.enabled {
+            return 0.0;
+        }
+        self.buy_penalty.get(ticker).copied().unwrap_or(0.0)
+    }
+
     /// Tie-break key for TRIM selection: trim the most-bearish first → ascending
     /// conviction, with a secondary fundamentals tilt (an expensive name with
     /// compressing margins trims ahead of a cheap, healthy one at equal
@@ -113,7 +165,7 @@ impl SignalBias {
     /// with healthy margins funds ahead at equal conviction). Higher key =
     /// funded earlier.
     pub fn buy_priority(&self, ticker: &str) -> f64 {
-        self.conviction_of(ticker) + FUND_TILT_WEIGHT * self.fund_tilt_of(ticker)
+        self.conviction_of(ticker) + FUND_TILT_WEIGHT * (self.fund_tilt_of(ticker) - self.buy_penalty_of(ticker))
     }
 
     /// Macro-regime multiplier on the deployable cash (PDF: cash is optionality,
@@ -196,5 +248,26 @@ mod tests {
         b2.fund_tilt.insert("LOVED".into(), -1.0);
         b2.fund_tilt.insert("HATED".into(), 1.0);
         assert!(b2.buy_priority("LOVED") > b2.buy_priority("HATED"));
+    }
+
+    #[test]
+    fn contract_penalty_funds_a_name_later_and_veto_is_reported() {
+        let mut b = bias(&[("CLEAN", 0.3), ("DILUTING", 0.3), ("CROWDED", 0.3)], None);
+        b.buy_penalty.insert("DILUTING".into(), 0.5);
+        b.buy_penalty.insert("CROWDED".into(), 1.0);
+        b.buy_veto.insert("SEVERE".into(), "dilution severe: active 424B takedown".into());
+        assert!(b.buy_priority("CLEAN") > b.buy_priority("DILUTING"));
+        assert!(b.buy_priority("DILUTING") > b.buy_priority("CROWDED"));
+        assert_eq!(b.buy_vetoed("SEVERE"), Some("dilution severe: active 424B takedown"));
+        assert_eq!(b.buy_vetoed("CLEAN"), None);
+        // A penalty is secondary to conviction, like the tilt.
+        let mut b2 = bias(&[("LOVED", 0.9), ("HATED", -0.9)], None);
+        b2.buy_penalty.insert("LOVED".into(), 1.5);
+        assert!(b2.buy_priority("LOVED") > b2.buy_priority("HATED"));
+        // Disabled bias: no veto, no penalty.
+        let mut off = SignalBias { enabled: false, ..Default::default() };
+        off.buy_veto.insert("X".into(), "y".into());
+        assert_eq!(off.buy_vetoed("X"), None);
+        assert_eq!(off.buy_penalty_of("X"), 0.0);
     }
 }

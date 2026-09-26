@@ -7,6 +7,7 @@
 //! target LABEL; `execute` resolves the instrument (stock/LEAPS/micro-cap),
 //! prices it, and converts to whole shares/contracts.
 
+use crate::rebalance::signal_bias::SignalBias;
 use crate::core::config::AppConfig;
 use crate::core::safety::cash_available_for_buys;
 use crate::portfolio::state::PortfolioState;
@@ -91,7 +92,19 @@ pub fn build_complete(state: &PortfolioState, cfg: &AppConfig) -> bool {
 }
 
 /// Plan today's build tranche. Pure over its inputs.
-pub fn plan_build(state: &PortfolioState, cfg: &AppConfig, asof: NaiveDate, start: NaiveDate) -> Vec<Action> {
+pub fn plan_build(
+    state: &PortfolioState,
+    cfg: &AppConfig,
+    asof: NaiveDate,
+    start: NaiveDate,
+    bias: &SignalBias,
+) -> Vec<Action> {
+    // Contract veto (2026-09-26): a name the producer grades `severe` on
+    // dilution is not accumulated this session. Log it once so the journal
+    // says why a shortfall went unfunded.
+    for (t, why) in &bias.buy_veto {
+        tracing::info!("build: {} buy VETOED this session by the contract — {}", t, why);
+    }
     let nav = state.nav.max(1e-9);
     let elapsed = weekdays_between(start, asof);
     let stages = active(elapsed);
@@ -125,6 +138,7 @@ pub fn plan_build(state: &PortfolioState, cfg: &AppConfig, asof: NaiveDate, star
         // Underfilled targets in this stage (skip unset micro-caps).
         let mut names: Vec<(&'static targets::Target, f64)> = targets::invested()
             .filter(|t| stage_of(t) == stage)
+            .filter(|t| bias.buy_vetoed(t.ticker).is_none())
             .filter(|t| targets::instrument_symbol(t, cfg).is_some())
             .map(|t| (t, (target_d(t.ticker) - current_mv(t, state, cfg)).max(0.0)))
             .filter(|(t, short)| *short > 1.0 && *short > band_d(t.ticker))
@@ -180,7 +194,7 @@ mod tests {
     fn day_one_builds_only_floor() {
         let st = empty_state(40_000.0);
         let start = NaiveDate::from_ymd_opt(2026, 6, 22).unwrap();
-        let acts = plan_build(&st, &AppConfig::default(), start, start);
+        let acts = plan_build(&st, &AppConfig::default(), start, start, &SignalBias::default());
         assert!(!acts.is_empty());
         for a in &acts {
             assert_eq!(targets::find(&a.ticker).unwrap().tier, Tier::Floor, "{} not Floor", a.ticker);
@@ -193,11 +207,11 @@ mod tests {
         let start = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
         // 8 weekdays in → Floor+Asymmetric, but NOT LEAPS yet.
         let asof = NaiveDate::from_ymd_opt(2026, 6, 10).unwrap();
-        let acts = plan_build(&st, &AppConfig::default(), asof, start);
+        let acts = plan_build(&st, &AppConfig::default(), asof, start, &SignalBias::default());
         assert!(!acts.iter().any(|a| targets::is_leaps(targets::find(&a.ticker).unwrap())));
         // 16 weekdays in → LEAPS now eligible.
         let asof2 = NaiveDate::from_ymd_opt(2026, 6, 22).unwrap();
-        let acts2 = plan_build(&st, &AppConfig::default(), asof2, start);
+        let acts2 = plan_build(&st, &AppConfig::default(), asof2, start, &SignalBias::default());
         assert!(acts2.iter().any(|a| targets::is_leaps(targets::find(&a.ticker).unwrap())));
     }
 
@@ -212,7 +226,7 @@ mod tests {
         let start = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
         let asof = NaiveDate::from_ymd_opt(2026, 6, 10).unwrap(); // Asym active
         let cfg = AppConfig::default();
-        let acts = plan_build(&st, &cfg, asof, start);
+        let acts = plan_build(&st, &cfg, asof, start, &SignalBias::default());
         let asym: Vec<_> = acts
             .iter()
             .filter(|a| targets::find(&a.ticker).map(|t| t.tier == Tier::Asymmetric).unwrap_or(false))
@@ -260,7 +274,7 @@ mod tests {
         let invested: f64 = positions.iter().map(|p| p.market_value).sum();
         let a = AlpacaAccount { cash: nav - invested, portfolio_value: nav, equity: nav, ..Default::default() };
         let st = PortfolioState::from_alpaca(&a, &positions);
-        let acts = plan_build(&st, &cfg, asof, start);
+        let acts = plan_build(&st, &cfg, asof, start, &SignalBias::default());
         assert!(
             !acts.iter().any(|a| targets::find(&a.ticker).map(|t| t.tier == Tier::Floor).unwrap_or(false)),
             "shortfalls inside a name's own band must not be planned: {acts:?}"
@@ -323,8 +337,29 @@ mod tests {
         let start = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
         let asof = NaiveDate::from_ymd_opt(2026, 8, 1).unwrap();
         let cfg = AppConfig::default();
-        let acts = plan_build(&st, &cfg, asof, start);
+        let acts = plan_build(&st, &cfg, asof, start, &SignalBias::default());
         let total: f64 = acts.iter().map(|a| a.dollars).sum();
         assert!(total <= 40_000.0 * (1.0 - cfg.cash_buffer_pct) + 1.0, "deployed {total}");
+    }
+
+    #[test]
+    fn contract_veto_skips_a_name_during_build() {
+        // 2026-09-26: a name the producer grades `severe` on dilution is not
+        // accumulated this session — the build simply funds the others.
+        let st = empty_state(40_000.0);
+        let start = NaiveDate::from_ymd_opt(2026, 6, 22).unwrap();
+        let victim = plan_build(&st, &AppConfig::default(), start, start, &SignalBias::default())
+            .first()
+            .map(|a| a.ticker.clone())
+            .expect("day one builds something");
+        let mut bias = SignalBias { enabled: true, ..Default::default() };
+        bias.buy_veto.insert(victim.clone(), "dilution severe: test".into());
+        let acts = plan_build(&st, &AppConfig::default(), start, start, &bias);
+        assert!(!acts.is_empty(), "the veto removes one name, not the build");
+        assert!(acts.iter().all(|a| a.ticker != victim), "{victim} must not be bought under a contract veto");
+        // A disabled bias carries no veto.
+        bias.enabled = false;
+        let acts = plan_build(&st, &AppConfig::default(), start, start, &bias);
+        assert!(acts.iter().any(|a| a.ticker == victim));
     }
 }

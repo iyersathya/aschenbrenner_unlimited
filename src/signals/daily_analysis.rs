@@ -22,6 +22,85 @@ pub enum Direction {
 /// Parsed whole from the contract; individual fields are read as the rebalance
 /// overlay grows to use them.
 #[allow(dead_code)]
+/// `quant.dilution` (additive, 2026-09-26; SEC EDGAR via the producer). An
+/// ABSENT block means the checks did not run — unknown, never "clean".
+/// `active_takedown` is a 424B priced within 2 days: the same window as the
+/// EDGAR overlay's ActiveOffering, so the two sources agree on what "selling
+/// into the tape right now" means and one can stand in when the other fails.
+/// `severity` mirrors trader-agent's daily-dilution-scan: severe (active
+/// takedown OR share count +15%/yr), moderate (recent takedown OR +7–15%/yr),
+/// watch (shelf on file OR +3–7%/yr), clear.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Dilution {
+    pub severity: String,
+    pub active_takedown: bool,
+    pub recent_takedown: bool,
+    pub shelf: bool,
+    pub share_growth_pct_yr: Option<f64>,
+    pub quality: String,
+}
+
+impl Dilution {
+    /// One-line "why" for a card or journal line.
+    pub fn detail(&self) -> String {
+        let mut parts = vec![];
+        if self.active_takedown {
+            parts.push("active 424B takedown".to_string());
+        } else if self.recent_takedown {
+            parts.push("424B takedown ≤90d".to_string());
+        }
+        if self.shelf {
+            parts.push("shelf on file".to_string());
+        }
+        if let Some(g) = self.share_growth_pct_yr {
+            parts.push(format!("shares {g:+.1}%/yr"));
+        }
+        if parts.is_empty() {
+            parts.push(self.severity.clone());
+        }
+        parts.join(", ")
+    }
+}
+
+/// `quant.short` (additive, 2026-09-26; FINRA via the producer). Two facts the
+/// producer keeps apart and so does this reader: daily short-sale VOLUME graded
+/// as a z-score against the name's OWN baseline (flow — the absolute level is
+/// 40–60% on nearly every liquid name and carries nothing), and bi-monthly
+/// short INTEREST (positioning, up to three weeks old; `settlement_date` says
+/// how old). Either half may be absent. Absent block = unknown, never "no
+/// shorts".
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ShortData {
+    /// elevated | watch | normal | depressed | insufficient_baseline
+    pub daily_read: Option<String>,
+    pub daily_z: Option<f64>,
+    pub daily_date: Option<String>,
+    /// crowded | elevated | building | normal
+    pub si_read: Option<String>,
+    pub short_pct_float: Option<f64>,
+    pub days_to_cover: Option<f64>,
+    pub settlement_date: Option<String>,
+    pub quality: String,
+}
+
+impl ShortData {
+    /// One-line positioning summary, always carrying the settlement date so a
+    /// two-week-old number is never read as today's.
+    pub fn detail(&self) -> String {
+        let mut parts = vec![];
+        if let Some(p) = self.short_pct_float {
+            parts.push(format!("{p:.1}% of float"));
+        }
+        if let Some(d) = self.days_to_cover {
+            parts.push(format!("DTC {d:.1}"));
+        }
+        if let Some(s) = &self.settlement_date {
+            parts.push(format!("settled {s}"));
+        }
+        parts.join(", ")
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Quant {
     pub source: Option<String>,
@@ -46,6 +125,10 @@ pub struct Quant {
     /// CapEx-cycle / cash-flow sub-block (SEC XBRL; stock_analysis_playbook).
     /// Absent for ETFs and un-analyzed names — treat as "unknown".
     pub fundamentals: Option<Fundamentals>,
+    /// Additive 2026-09-26 sub-blocks. `None` = the producer did not run the
+    /// check — unknown, never clean (see the struct docs).
+    pub dilution: Option<Dilution>,
+    pub short: Option<ShortData>,
 }
 
 /// The subset of `quant.fundamentals` the long-horizon overlay uses. All TTM;
@@ -122,6 +205,40 @@ fn parse_dir(s: &str) -> Direction {
     }
 }
 
+fn parse_dilution(q: &Value) -> Option<Dilution> {
+    let d = q.get("dilution")?.as_object()?;
+    let s = |k: &str| d.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let present = |k: &str| d.get(k).map(|v| v.is_object()).unwrap_or(false);
+    Some(Dilution {
+        severity: s("severity"),
+        active_takedown: present("active_takedown"),
+        recent_takedown: present("recent_takedown"),
+        shelf: present("shelf"),
+        share_growth_pct_yr: d.get("share_growth_pct_yr").and_then(|v| v.as_f64()),
+        quality: s("quality"),
+    })
+}
+
+fn parse_short(q: &Value) -> Option<ShortData> {
+    let s = q.get("short")?.as_object()?;
+    let dv = s.get("daily_short_volume").and_then(|v| v.as_object());
+    let si = s.get("short_interest").and_then(|v| v.as_object());
+    let gs = |o: Option<&serde_json::Map<String, Value>>, k: &str| {
+        o.and_then(|m| m.get(k)).and_then(|v| v.as_str()).map(String::from)
+    };
+    let gf = |o: Option<&serde_json::Map<String, Value>>, k: &str| o.and_then(|m| m.get(k)).and_then(|v| v.as_f64());
+    Some(ShortData {
+        daily_read: gs(dv, "read"),
+        daily_z: gf(dv, "z"),
+        daily_date: gs(dv, "date"),
+        si_read: gs(si, "read"),
+        short_pct_float: gf(si, "short_pct_float"),
+        days_to_cover: gf(si, "days_to_cover"),
+        settlement_date: gs(si, "settlement_date"),
+        quality: s.get("quality").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+    })
+}
+
 fn parse_quant(j: &Value) -> Option<Quant> {
     let q = j.get("quant")?;
     if !q.is_object() {
@@ -158,6 +275,8 @@ fn parse_quant(j: &Value) -> Option<Quant> {
         free_float_pct: f("free_float_pct"),
         float_shares: q.get("float_shares").and_then(|v| v.as_i64()),
         macro_score: q.get("macro_score").and_then(|v| v.as_i64()),
+        dilution: parse_dilution(q),
+        short: parse_short(q),
     })
 }
 
@@ -320,5 +439,34 @@ mod tests {
         assert!(a.found);
         assert!(a.quant.is_none(), "record without a quant block must yield None");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn parses_dilution_and_short_sub_blocks() {
+        let j: Value = serde_json::from_str(
+            r#"{"quant":{"price":1.0,
+                "dilution":{"severity":"severe","active_takedown":{"form":"424B5","filed":"2026-09-25","age_days":1},
+                            "recent_takedown":null,"shelf":{"form":"S-3","filed":"2026-07-02","age_days":86},
+                            "share_growth_pct_yr":66.0,"quality":"verified","source":"sec_edgar"},
+                "short":{"daily_short_volume":{"date":"2026-09-25","today_pct":65.7,"z":1.9,"read":"watch"},
+                         "short_interest":{"settlement_date":"2026-09-15","short_pct_float":24.0,"days_to_cover":5.5,"read":"crowded"},
+                         "quality":"verified","source":"finra"}}}"#,
+        )
+        .unwrap();
+        let q = parse_quant(&j).unwrap();
+        let d = q.dilution.as_ref().unwrap();
+        assert_eq!(d.severity, "severe");
+        assert!(d.active_takedown && !d.recent_takedown && d.shelf);
+        assert_eq!(d.share_growth_pct_yr, Some(66.0));
+        assert!(d.detail().contains("active 424B") && d.detail().contains("+66.0%/yr"));
+        let s = q.short.as_ref().unwrap();
+        assert_eq!(s.si_read.as_deref(), Some("crowded"));
+        assert_eq!(s.daily_read.as_deref(), Some("watch"));
+        assert_eq!(s.daily_z, Some(1.9));
+        assert!(s.detail().contains("settled 2026-09-15"));
+        // Absent blocks parse to None — unknown, never clean.
+        let j2: Value = serde_json::from_str(r#"{"quant":{"price":1.0}}"#).unwrap();
+        let q2 = parse_quant(&j2).unwrap();
+        assert!(q2.dilution.is_none() && q2.short.is_none());
     }
 }

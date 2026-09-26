@@ -123,7 +123,7 @@ pub async fn run(mode: RunMode, armed: bool) -> String {
                     .collect();
                 let mut acts = protective;
                 acts.extend(
-                    build::plan_build(&state, cfg, today, start)
+                    build::plan_build(&state, cfg, today, start, &bias)
                         .into_iter()
                         .filter(|a| !guarded.contains(&a.ticker)),
                 );
