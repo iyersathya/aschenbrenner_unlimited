@@ -28,6 +28,23 @@
       }
     },
     "days_to_earnings": 53,
+    "dilution": {
+      "active_takedown": null,
+      "quality": "verified",
+      "recent_takedown": {
+        "age_days": 19,
+        "filed": "2026-08-20",
+        "form": "424B5"
+      },
+      "severity": "moderate",
+      "share_growth_pct_yr": 9.4,
+      "shelf": {
+        "age_days": 68,
+        "filed": "2026-07-02",
+        "form": "S-3"
+      },
+      "source": "sec_edgar"
+    },
     "expected_move_30d_pct": 8.14,
     "field_quality": {
       "avg_dollar_volume_20d": "verified",
@@ -62,7 +79,16 @@
       "revenue_yoy_pct": 5.97,
       "shares_outstanding": 14590000000,
       "source": "sec-xbrl",
-      "ttm_window": "→2026Q1"
+      "ttm_window": "\u21922026Q1"
+    },
+    "insider": {
+      "direction": "unresolved",
+      "direction_note": "counts only; code F is not a sale and is not separated here \u2014 see daily-insider-scan for parsed direction on the watchlist",
+      "form4_count_30d": 6,
+      "form4_count_7d": 1,
+      "latest_form4": "2026-09-05",
+      "quality": "verified",
+      "source": "sec_edgar"
     },
     "iv": 28.4,
     "iv_rank": 42.0,
@@ -73,33 +99,31 @@
     "price": 196.5,
     "range_position_52w": 0.74,
     "realized_vol_20d": 22.5,
-    "source": "alpaca+fmp",
-    "dilution": {
-      "severity": "moderate",
-      "active_takedown": null,
-      "recent_takedown": {
-        "form": "424B5",
-        "filed": "2026-08-20",
-        "age_days": 19
+    "short": {
+      "daily_short_volume": {
+        "date": "2026-06-05",
+        "mean_10d": 52.1,
+        "n_baseline": 10,
+        "read": "watch",
+        "sd_10d": 3.4,
+        "today_pct": 58.3,
+        "z": 1.82
       },
-      "shelf": {
-        "form": "S-3",
-        "filed": "2026-07-02",
-        "age_days": 68
-      },
-      "share_growth_pct_yr": 9.4,
       "quality": "verified",
-      "source": "sec_edgar"
+      "short_interest": {
+        "avg_daily_volume": 57600000.0,
+        "change_pct": 2.11,
+        "days_to_cover": 2.1,
+        "float_source": "quant.float_shares",
+        "previous_position": 118500000.0,
+        "read": "normal",
+        "settlement_date": "2026-05-29",
+        "short_pct_float": 0.8,
+        "short_position": 121000000.0
+      },
+      "source": "finra"
     },
-    "insider": {
-      "form4_count_7d": 1,
-      "form4_count_30d": 6,
-      "latest_form4": "2026-09-05",
-      "direction": "unresolved",
-      "direction_note": "counts only; code F is not a sale and is not separated here — see daily-insider-scan for parsed direction on the watchlist",
-      "quality": "verified",
-      "source": "sec_edgar"
-    }
+    "source": "alpaca+fmp"
   },
   "reports": {
     "bear_case": "Extended above the 20DMA; pullback risk.",
