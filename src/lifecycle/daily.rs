@@ -92,7 +92,27 @@ pub async fn run(mode: RunMode, armed: bool) -> String {
         Ok(a) => a,
         Err(e) => return format!("error: account fetch failed: {e}"),
     };
-    let positions = client.get_positions().await.unwrap_or_default();
+    // A failed positions read used to become an EMPTY portfolio (2026-09-26
+    // audit finding 4): the planner then saw every held name as missing and
+    // planned to buy the book again. No broker snapshot, no plan.
+    let positions = match client.get_positions().await {
+        Ok(p) => p,
+        Err(e) => {
+            let msg = format!("error: positions fetch failed — no planning on an incomplete broker snapshot: {e}");
+            delivery::notify_text(&msg).await;
+            return msg;
+        }
+    };
+    // Open orders are part of the snapshot too: a name with a resting BUY is
+    // not "under target" — planning it again would double the buy.
+    let open_orders = match client.get_open_orders().await {
+        Ok(o) => o,
+        Err(e) => {
+            let msg = format!("error: open-orders fetch failed — no planning on an incomplete broker snapshot: {e}");
+            delivery::notify_text(&msg).await;
+            return msg;
+        }
+    };
     let state = PortfolioState::from_alpaca(&account, &positions);
 
     let high_water = update_high_water(&vault, &state);
@@ -125,11 +145,14 @@ pub async fn run(mode: RunMode, armed: bool) -> String {
                 // Names execute() refused last session because one unit exceeds
                 // the slot cap -- they fund last so the residual reaches a
                 // buyable name (2026-09-26).
-                let unbuyable: std::collections::HashSet<String> = vault
+                // Structured (2026-09-26): { ticker: unit_price } — the planner
+                // checks affordability against the slot cap BEFORE reserving
+                // budget, instead of matching the wording of a skip line.
+                let unbuyable: std::collections::HashMap<String, f64> = vault
                     .read_json("meta", "unbuyable.json")
-                    .get("tickers")
-                    .and_then(|v| v.as_array())
-                    .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                    .get("units")
+                    .and_then(|v| v.as_object())
+                    .map(|m| m.iter().filter_map(|(k, v)| v.as_f64().map(|f| (k.clone(), f))).collect())
                     .unwrap_or_default();
                 acts.extend(
                     build::plan_build(&state, cfg, today, start, &bias, &unbuyable)
@@ -142,16 +165,28 @@ pub async fn run(mode: RunMode, armed: bool) -> String {
         RunMode::Maintenance => (plan_rebalance(&state, cfg, &high_water, &bias, today), "maintenance"),
     };
 
+    // Skip any action whose name already has an open order on the same side.
+    let actions: Vec<_> = actions
+        .into_iter()
+        .filter(|a| {
+            let dup = open_orders.iter().any(|o| o.symbol_root() == a.ticker && o.side == a.side());
+            if dup {
+                tracing::info!("daily: {} skipped — an open {} order is already resting at the broker", a.ticker, a.side());
+            }
+            !dup
+        })
+        .collect();
     let results = execute_actions(&actions, cfg, alpaca.as_ref(), data.as_ref(), armed, &state).await;
     persist_cards(&vault, today, mode_label, armed, &actions, &results);
     // Record which names were refused for "> slot cap" so tomorrow's build
     // funds them last (see build::plan_build). Rewritten every session.
-    let unbuyable: Vec<String> = results
+    let units: serde_json::Map<String, serde_json::Value> = results
         .iter()
-        .filter(|r| r.reason.contains("> slot cap"))
-        .map(|r| r.ticker.clone())
+        .filter(|r| r.code == Some("unit_gt_slot"))
+        .filter_map(|r| r.unit_price.map(|u| (r.ticker.split(" (").next().unwrap_or(&r.ticker).to_string(), serde_json::json!(u))))
         .collect();
-    let _ = vault.write_json("meta", "unbuyable.json", &serde_json::json!({ "date": today.to_string(), "tickers": unbuyable }));
+    let tickers: Vec<&String> = units.keys().collect();
+    let _ = vault.write_json("meta", "unbuyable.json", &serde_json::json!({ "date": today.to_string(), "tickers": tickers, "units": units }));
 
     let digest = build_digest(cfg, today, mode_label, armed, &state, &high_water, &bias, &results);
     delivery::notify_text(&digest).await;

@@ -133,6 +133,19 @@ pub struct Quant {
     /// 20-session return in excess of SPY. None = no sector block.
     pub sector_rs_20d_pct: Option<f64>,
     pub sector_group: Option<String>,
+    /// Per-material-field quality (`verified|stale|conflicted|unknown|unavailable|estimated`).
+    /// Empty when the record predates the field (2026-09-07). Carried since
+    /// 2026-09-26 so a scalar is never read without its grade (audit finding 6).
+    pub field_quality: std::collections::HashMap<String, String>,
+}
+
+impl Quant {
+    /// True when `field` may be acted on: the map is absent (legacy record) or
+    /// grades it `verified`. Same semantics as qqq-trader; the intraday sleeves
+    /// are stricter (verified-only, no legacy pass) by design.
+    pub fn usable(&self, field: &str) -> bool {
+        self.field_quality.is_empty() || self.field_quality.get(field).map(|s| s == "verified").unwrap_or(true)
+    }
 }
 
 /// The subset of `quant.fundamentals` the long-horizon overlay uses. All TTM;
@@ -283,6 +296,11 @@ fn parse_quant(j: &Value) -> Option<Quant> {
         short: parse_short(q),
         sector_rs_20d_pct: q.get("sector").and_then(|v| v.get("rs_20d_pct")).and_then(|v| v.as_f64()),
         sector_group: q.get("sector").and_then(|v| v.get("group")).and_then(|v| v.as_str()).map(String::from),
+        field_quality: q
+            .get("field_quality")
+            .and_then(|v| v.as_object())
+            .map(|m| m.iter().filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string()))).collect())
+            .unwrap_or_default(),
     })
 }
 
@@ -422,6 +440,10 @@ mod tests {
         let a = read(&cfg, "AAPL", day, 5);
         assert!(a.found);
         let q = a.quant.expect("quant block must parse from the enriched fixture");
+        assert!(q.usable("price"), "the canonical fixture grades price verified (or carries no map)");
+        let mut bad = q.clone();
+        bad.field_quality.insert("price".into(), "conflicted".into());
+        assert!(!bad.usable("price") && bad.usable("iv_rank"), "only the graded field is withheld");
         assert_eq!(q.source.as_deref(), Some("alpaca+fmp"));
         assert_eq!(q.price, Some(196.5));
         assert_eq!(q.macro_score, Some(61));

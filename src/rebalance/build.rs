@@ -98,7 +98,7 @@ pub fn plan_build(
     asof: NaiveDate,
     start: NaiveDate,
     bias: &SignalBias,
-    unbuyable: &std::collections::HashSet<String>,
+    unbuyable: &std::collections::HashMap<String, f64>,
 ) -> Vec<Action> {
     // Unbuyable names last (2026-09-26): a LEAPS whose ONE contract exceeds its
     // slot cap (NVDA $300C, IREN $30C) was sorted first by shortfall, took the
@@ -109,8 +109,22 @@ pub fn plan_build(
     // a name that can actually be bought. The slot sizing itself is still the
     // operator's decision (backlog 156/250) -- this only stops it wasting the
     // day's budget.
-    for t in unbuyable {
-        tracing::info!("build: {} unbuyable at its slot cap last session — funds last", t);
+    // Affordability BEFORE budget (2026-09-26 audit finding 10): a name whose
+    // recorded unit price exceeds its slot cap is not planned at all this
+    // session (the residual flows to a buyable name); a name that was merely
+    // refused last session for another reason still funds last.
+    let slot_cap = |label: &str| targets::invested_target_weight(label, cfg.cash_buffer_pct) * state.nav.max(1e-9) * (1.0 + cfg.rebalance_band_pct);
+    let unaffordable: std::collections::HashSet<String> = unbuyable
+        .iter()
+        .filter(|(t, unit)| **unit > slot_cap(t))
+        .map(|(t, _)| t.clone())
+        .collect();
+    for (t, unit) in unbuyable {
+        if unaffordable.contains(t) {
+            tracing::info!("build: {} one unit ${:.0} > slot cap ${:.0} — NOT planned this session (operator: re-strike or raise the slot)", t, unit, slot_cap(t));
+        } else {
+            tracing::info!("build: {} unbuyable last session (unit ${:.0} now fits ${:.0}) — funds last", t, unit, slot_cap(t));
+        }
     }
     // Contract veto (2026-09-26): a name the producer grades `severe` on
     // dilution is not accumulated this session. Log it once so the journal
@@ -153,12 +167,13 @@ pub fn plan_build(
             .filter(|t| stage_of(t) == stage)
             .filter(|t| bias.buy_vetoed(t.ticker).is_none())
             .filter(|t| targets::instrument_symbol(t, cfg).is_some())
+            .filter(|t| !unaffordable.contains(t.ticker))
             .map(|t| (t, (target_d(t.ticker) - current_mv(t, state, cfg)).max(0.0)))
             .filter(|(t, short)| *short > 1.0 && *short > band_d(t.ticker))
             .collect();
         names.sort_by(|a, b| {
-            let ua = unbuyable.contains(a.0.ticker);
-            let ub = unbuyable.contains(b.0.ticker);
+            let ua = unbuyable.contains_key(a.0.ticker);
+            let ub = unbuyable.contains_key(b.0.ticker);
             ua.cmp(&ub).then(b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal))
         });
         if names.is_empty() {
@@ -386,9 +401,23 @@ mod tests {
         let start = NaiveDate::from_ymd_opt(2026, 6, 22).unwrap();
         let first = plan_build(&st, &AppConfig::default(), start, start, &SignalBias::default(), &Default::default())
             .first().map(|a| a.ticker.clone()).expect("day one builds");
-        let mut unb = std::collections::HashSet::new();
-        unb.insert(first.clone());
+        let mut unb = std::collections::HashMap::new();
+        unb.insert(first.clone(), 1.0); // refused last session, but one unit now fits: funds LAST
         let acts = plan_build(&st, &AppConfig::default(), start, start, &SignalBias::default(), &unb);
         assert!(acts.first().map(|a| a.ticker != first).unwrap_or(true), "the unbuyable name must not take the first slice");
     }
+
+    #[test]
+    fn unaffordable_unit_is_not_planned_and_others_still_are() {
+        let st = empty_state(40_000.0);
+        let start = NaiveDate::from_ymd_opt(2026, 6, 22).unwrap();
+        let all = plan_build(&st, &AppConfig::default(), start, start, &SignalBias::default(), &Default::default());
+        let first = all.first().expect("a fresh book plans something").ticker.clone();
+        let mut unb = std::collections::HashMap::new();
+        unb.insert(first.clone(), 1.0e9); // one unit costs more than any slot
+        let acts = plan_build(&st, &AppConfig::default(), start, start, &SignalBias::default(), &unb);
+        assert!(acts.iter().all(|a| a.ticker != first), "{first} must receive no budget while one unit exceeds its slot");
+        assert!(!acts.is_empty(), "the residual flows to buyable names");
+    }
+
 }

@@ -51,6 +51,28 @@ pub struct AlpacaAccount {
     pub paper: bool,
 }
 
+/// A resting order as the planner sees it.
+#[derive(Debug, Clone, Default)]
+pub struct OpenOrder {
+    pub id: String,
+    pub symbol: String,
+    pub side: String,
+    pub qty: String,
+}
+
+impl OpenOrder {
+    /// Ticker for an equity symbol, or the OCC root for an option symbol
+    /// (`NVDA270115C00300000` → `NVDA`), so a LEAPS order matches its target label.
+    pub fn symbol_root(&self) -> String {
+        let s = self.symbol.trim();
+        if s.len() > 15 && s.chars().rev().take(15).all(|c| c.is_ascii_digit() || c == 'C' || c == 'P') {
+            let root: String = s.chars().take_while(|c| c.is_ascii_alphabetic()).collect();
+            return root;
+        }
+        s.to_string()
+    }
+}
+
 // Broker fields parsed from /v2/positions — kept whole even where not yet read.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
@@ -162,6 +184,19 @@ impl AlpacaClient {
             account_blocked: b(&d, "account_blocked"),
             paper: acct_num.starts_with("PA"),
         })
+    }
+
+    /// Open (resting) orders — part of the broker snapshot a plan needs.
+    pub async fn get_open_orders(&self) -> Result<Vec<OpenOrder>, AlpacaError> {
+        let d = self.get("v2/orders?status=open&limit=500").await?;
+        let mut out = vec![];
+        if let Some(arr) = d.as_array() {
+            for o in arr {
+                let s = |k: &str| o.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                out.push(OpenOrder { id: s("id"), symbol: s("symbol"), side: s("side"), qty: s("qty") });
+            }
+        }
+        Ok(out)
     }
 
     pub async fn get_positions(&self) -> Result<Vec<Position>, AlpacaError> {

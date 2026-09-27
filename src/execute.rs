@@ -27,6 +27,14 @@ pub struct ExecResult {
     pub dollars: f64,
     pub status: String,
     pub reason: String,
+    /// Structured skip code (2026-09-26 audit finding 10) — the planner keys
+    /// on this, never on the wording of `status`:
+    /// `unit_gt_slot` (one indivisible unit exceeds the name's slot cap),
+    /// `slice_lt_unit` (the planned slice is under one unit), `lt_one_share`,
+    /// `cash_lt_unit` (no-leverage cap).
+    pub code: Option<&'static str>,
+    /// Per-unit price when the skip was about unit size.
+    pub unit_price: Option<f64>,
 }
 
 impl ExecResult {
@@ -127,6 +135,8 @@ pub async fn execute_actions(
                 dollars: 0.0,
                 status: "advisory".into(),
                 reason: a.reason.clone(),
+                code: None,
+                unit_price: None,
             });
             continue;
         }
@@ -204,7 +214,8 @@ pub async fn execute_actions(
                 } else {
                     format!("no-leverage cap: cash budget ${:.0} < 1 unit (${:.2})", buy_budget, r.unit_price)
                 };
-                results.push(skip(a, &why));
+                let code = if a.dollars < r.unit_price { "slice_lt_unit" } else { "cash_lt_unit" };
+                results.push(skip_code(a, &why, Some(code), Some(r.unit_price)));
                 continue;
             }
         }
@@ -218,7 +229,7 @@ pub async fn execute_actions(
             } else {
                 "rounds to < 1 share".to_string()
             };
-            results.push(skip(a, &why));
+            results.push(skip_code(a, &why, Some(if r.is_option { "unit_gt_slot" } else { "lt_one_share" }), Some(r.unit_price)));
             continue;
         }
         let buy = a.kind == ActionKind::Buy;
@@ -264,6 +275,8 @@ pub async fn execute_actions(
             dollars: notional,
             status,
             reason: format!("{}{}", a.reason, note),
+            code: None,
+            unit_price: None,
         });
     }
     results
@@ -294,6 +307,10 @@ pub fn advisory_count(results: &[ExecResult]) -> usize {
 }
 
 fn skip(a: &Action, why: &str) -> ExecResult {
+    skip_code(a, why, None, None)
+}
+
+fn skip_code(a: &Action, why: &str, code: Option<&'static str>, unit_price: Option<f64>) -> ExecResult {
     ExecResult {
         ticker: a.ticker.clone(),
         side: a.side().into(),
@@ -302,6 +319,8 @@ fn skip(a: &Action, why: &str) -> ExecResult {
         dollars: 0.0,
         status: format!("skipped: {why}"),
         reason: a.reason.clone(),
+        code,
+        unit_price,
     }
 }
 
