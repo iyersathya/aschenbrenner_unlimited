@@ -140,11 +140,11 @@ pub struct Quant {
 }
 
 impl Quant {
-    /// True when `field` may be acted on: the map is absent (legacy record) or
-    /// grades it `verified`. Same semantics as qqq-trader; the intraday sleeves
-    /// are stricter (verified-only, no legacy pass) by design.
+    /// True only when `field_quality` grades `field` `verified` — the same
+    /// fail-closed rule as the intraday sleeves and qqq-trader.
     pub fn usable(&self, field: &str) -> bool {
-        self.field_quality.is_empty() || self.field_quality.get(field).map(|s| s == "verified").unwrap_or(true)
+        // Fail closed (2026-09-26 audit follow-up): absent map / absent field = unknown = not usable.
+        self.field_quality.get(field).map(|s| s == "verified").unwrap_or(false)
     }
 }
 
@@ -440,7 +440,8 @@ mod tests {
         let a = read(&cfg, "AAPL", day, 5);
         assert!(a.found);
         let q = a.quant.expect("quant block must parse from the enriched fixture");
-        assert!(q.usable("price"), "the canonical fixture grades price verified (or carries no map)");
+        assert!(q.usable("price") == (q.field_quality.get("price").map(|s| s == "verified").unwrap_or(false)), "usable is verified-only");
+        assert!(!Quant::default().usable("price"), "an absent map is unknown, never usable");
         let mut bad = q.clone();
         bad.field_quality.insert("price".into(), "conflicted".into());
         assert!(!bad.usable("price") && bad.usable("iv_rank"), "only the graded field is withheld");
