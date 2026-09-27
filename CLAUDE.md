@@ -174,3 +174,10 @@ All env keys parsed by `core/config.rs`. Important ones not obvious from code:
 ## 2026-09-26 — unbuyable names fund last; sector tilt
 
 `daily.rs` records every `> slot cap` refusal from `execute_actions` into vault `meta/unbuyable.json`; `plan_build` sorts those names LAST within each stage, so the day's residual reaches a buyable LEAPS (CRWV/OKLO) instead of NVDA/IREN every session. `build_complete` is still structurally false while a LEAPS unit exceeds its slot — the slot sizing is the operator's decision (backlog 156/250). `SignalBias.sector_tilt` (the SPDR group's 20-day excess over SPY, ±10 pts saturating) enters `buy_priority` at the fundamentals-tilt weight.
+
+## 2026-09-26 pm — audit follow-through (findings 4, 6, 10)
+
+- **No broker snapshot, no plan** (positions + open orders), same as the sibling.
+- **Structured skip codes**: `ExecResult.code` ∈ `unit_gt_slot | slice_lt_unit | lt_one_share | cash_lt_unit` and `unit_price`; `meta/unbuyable.json` is `{ tickers, units: {ticker: unit_price} }` written from the code, never from the wording of a skip line.
+- **Affordability before budget**: `plan_build` computes each name's slot cap (`target × (1 + band)`) and gives a name whose recorded unit price exceeds it **no allocation** this session — the residual flows to buyable names. A name refused for another reason still funds last. The slot sizing itself remains the operator's decision (re-strike or raise the slot).
+- The daily_analysis reader carries `field_quality` + `Quant::usable`.
